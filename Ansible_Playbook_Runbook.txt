@@ -1,0 +1,73 @@
+Ansible Playbook Runbook
+====================================
+
+Purpose:
+--------
+This runbook provides step-by-step instructions to execute an Ansible playbook on the JB server using a service account and a personal inventory file.
+
+Pre-Requisites:
+---------------
+1. Ensure you have SSH access to the JB server with your adm-account.
+2. Make sure Ansible is installed and configured on the JB server.
+3. Verify you have the necessary permissions to switch to the service account.
+4. Ensure your playbook and inventory file are present under /app/usr/playbook.
+
+Steps to Execute Playbook:
+--------------------------
+
+Step 1: Login to JB Server
+--------------------------
+ssh <your_adm_account>@<JB_server_IP_or_Hostname>
+
+Step 2: Switch to Service Account
+---------------------------------
+sudo su - iv svcacct
+
+(Note: 'iv' ensures that you inherit the environment variables of the service account)
+
+Step 3: Navigate to Playbook Directory
+--------------------------------------
+cd /app/usr/playbook
+
+Step 4: Create Your Personal Inventory File
+-------------------------------------------
+Create a file named inv.yml with the following example content:
+
+[nodes]
+server1.example.com
+server2.example.com
+
+[nodes:vars]
+ansible_user=clouduser
+ansible_ssh_private_key_file=~/.ssh/id_rsa
+
+Step 5: Execute the Ansible Playbook
+------------------------------------
+ansible-playbook -i inv.yml playbook.yml -u abc
+
+    - -i : specifies the inventory file
+    - -u abc : specifies the user for remote execution
+
+Step 6: Verify the Output
+-------------------------
+- Check the Ansible summary for successful execution or failed tasks.
+- Review generated reports or logs if configured.
+
+Step 7: Troubleshooting
+-----------------------
+1. Re-run the playbook in verbose mode:
+   ansible-playbook -i inv.yml playbook.yml -u abc -vvv
+2. Ensure your inventory file and SSH keys are correct.
+3. Verify network connectivity to all target hosts.
+
+Completion:
+-----------
+Once the playbook executes successfully:
+1. Share the generated report/log if required.
+2. Exit the service account and log out from the JB server.
+
+exit
+logout
+
+====================================
+End of Runbook
