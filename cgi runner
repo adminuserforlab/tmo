@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+# -- coding: utf-8 --
+"""
+Ansible Playbook CGI Runner
+- Single CGI script that renders a form (GET) and executes a whitelisted playbook (POST)
+- Lets the user choose a playbook, pick an inventory or enter hostnames, and run it
+- Safeguards: playbook/inventory whitelist, hostname validation, subprocess arg list, timeouts
+
+Place as: /usr/lib/cgi-bin/ansible_runner.py (or any CGI-enabled path)
+Make executable: chmod 0755 ansible_runner.py
+Requires: python3, ansible-core (or ansible), web server with CGI enabled (e.g., Apache)
+"""
+
+import cgi
+import cgitb
+import html
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+cgitb.enable()  # show tracebacks in the browser (turn off in production)
+
+# --- CONFIG ---
+# Whitelist friendly name -> absolute path to playbooks
+PLAYBOOKS = {
+    "deploy": "/opt/ansible/playbooks/deploy.yml",
+    "upgrade": "/opt/ansible/playbooks/upgrade.yml",
+    "rollback": "/opt/ansible/playbooks/rollback.yml",
+}
+
+# Optional: Whitelist of static inventories (INI or YAML)
+INVENTORIES = {
+    "prod": "/opt/ansible/inv/prod.ini",
+    "staging": "/opt/ansible/inv/staging.ini",
+    "dev": "/opt/ansible/inv/dev.ini",
+}
+
+# Runtime options
+ANSIBLE_BIN = shutil.which("ansible-playbook") or "/usr/bin/ansible-playbook"
+DEFAULT_USER = os.environ.get("ANSIBLE_SSH_USER", "ansible")
+RUN_TIMEOUT_SECS = 3600  # 1 hour cap
+
+# If using sudo: allow only this exact binary in sudoers for www-data
+USE_SUDO = False  # set True if you need root escalation for ansible-playbook
+SUDO_BIN = shutil.which("sudo") or "/usr/bin/sudo"
+
+# Very simple host regex: letters, digits, dash, dot, underscore
+HOST_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def header_ok():
+    print("Content-Type: text/html; charset=utf-8")
+    print()
+
+
+def render_form(msg: str = ""):
+    playbook_opts = "\n".join(
+        f'<option value="{html.escape(k)}">{html.escape(k)} — {html.escape(v)}</option>'
+        for k, v in PLAYBOOKS.items()
+    )
+    inv_opts = "\n".join(
+        f'<option value="{html.escape(k)}">{html.escape(k)} — {html.escape(v)}</option>'
+        for k, v in INVENTORIES.items()
+    )
+
+    print(f"""
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Ansible Playbook CGI Runner</title>
+  <style>
+    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
+    .card {{ max-width: 900px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }}
+    h1 {{ margin-top: 0; }}
+    label {{ display:block; margin: 12px 0 6px; font-weight: 600; }}
+    select, input[type=text], textarea {{ width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }}
+    .row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
+    .muted {{ color: #666; font-size: 0.95em; }}
+    .btn {{ background: #0d6efd; color: #fff; padding: 10px 16px; border: 0; border-radius: 8px; cursor: pointer; }}
+    .warn {{ background: #fff3cd; border: 1px solid #ffeeba; padding: 8px 12px; border-radius: 8px; }}
+    pre {{ background: #0b1020; color: #d1e7ff; padding: 12px; border-radius: 8px; overflow-x: auto; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Ansible Playbook CGI Runner</h1>
+    {('<div class="warn">' + html.escape(msg) + '</div>') if msg else ''}
+    <form method="post" action="">
+      <label for="playbook">Playbook (whitelisted)</label>
+      <select id="playbook" name="playbook" required>
+        <option value="" disabled selected>Select a playbook…</option>
+        {playbook_opts}
+      </select>
+
+      <div class="row">
+        <div>
+          <label for="inventory_key">Inventory (whitelisted)</label>
+          <select id="inventory_key" name="inventory_key">
+            <option value="">(None – I'll enter hostnames)</option>
+            {inv_opts}
+          </select>
+          <div class="muted">Use a static inventory, or leave blank to supply hostnames below.</div>
+        </div>
+        <div>
+          <label for="limit">Limit (-l)</label>
+          <input id="limit" name="limit" type="text" placeholder="groupname or host1,host2 (optional)" />
+        </div>
+      </div>
+
+      <label for="hosts">Hostnames (when not using inventory)</label>
+      <input id="hosts" name="hosts" type="text" placeholder="host1,host2.example.com (optional)" />
+      <div class="muted">If provided, a temporary inventory with group [targets] will be created.</div>
+
+      <div class="row">
+        <div>
+          <label for="user">SSH user (-u)</label>
+          <input id="user" name="user" type="text" value="{html.escape(DEFAULT_USER)}" />
+        </div>
+        <div>
+          <label for="tags">--tags (optional, comma-separated)</label>
+          <input id="tags" name="tags" type="text" placeholder="setup,deploy" />
+        </div>
+      </div>
+
+      <label><input type="checkbox" name="check" value="1" /> Dry run (--check)</label>
+      <label><input type="checkbox" name="become" value="1" checked /> Become (-b)</label>
+
+      <div style="margin-top:16px;">
+        <button class="btn" type="submit">Run Playbook</button>
+      </div>
+    </form>
+  </div>
+</body>
+</html>
+""")
+
+
+def validate_hosts(hosts_csv: str):
+    hosts = []
+    for h in filter(None, [x.strip() for x in hosts_csv.split(",")]):
+        if not HOST_RE.match(h):
+            raise ValueError(f"Invalid hostname: {h}")
+        hosts.append(h)
+    if not hosts:
+        raise ValueError("No valid hostnames provided")
+    return hosts
+
+
+def do_run(form: cgi.FieldStorage):
+    # Resolve playbook
+    playbook_key = (form.getfirst("playbook") or "").strip()
+    if playbook_key not in PLAYBOOKS:
+        render_form("Invalid or missing playbook selected.")
+        return
+    playbook_path = PLAYBOOKS[playbook_key]
+
+    # Resolve inventory handling
+    inventory_key = (form.getfirst("inventory_key") or "").strip()
+    tmp_inv_path = None
+    inventory_path = None
+
+    if inventory_key:
+        if inventory_key not in INVENTORIES:
+            render_form("Invalid inventory selection.")
+            return
+        inventory_path = INVENTORIES[inventory_key]
+    else:
+        hosts_csv = (form.getfirst("hosts") or "").strip()
+        try:
+            hosts = validate_hosts(hosts_csv) if hosts_csv else []
+        except ValueError as e:
+            render_form(str(e))
+            return
+        if hosts:
+            # Create a minimal temporary INI inventory
+            tf = tempfile.NamedTemporaryFile("w", delete=False, prefix="inv_", suffix=".ini")
+            tf.write("[targets]\n")
+            for h in hosts:
+                tf.write(f"{h}\n")
+            tf.flush()
+            tf.close()
+            tmp_inv_path = tf.name
+            inventory_path = tmp_inv_path
+
+    # Build ansible-playbook command
+    cmd = [ANSIBLE_BIN]
+    if inventory_path:
+        cmd += ["-i", inventory_path]
+    if form.getfirst("limit"):
+        limit = form.getfirst("limit").strip()
+        # basic validation for limit token(s)
+        if not re.match(r"^[A-Za-z0-9_.,-]+$", limit):
+            render_form("Invalid characters in limit parameter.")
+            return
+        cmd += ["-l", limit]
+    user = (form.getfirst("user") or DEFAULT_USER).strip()
+    if not re.match(r"^[A-Za-z0-9_.-]+$", user):
+        render_form("Invalid SSH user.")
+        return
+    cmd += ["-u", user]
+
+    if form.getfirst("become") == "1":
+        cmd += ["-b"]
+    if form.getfirst("check") == "1":
+        cmd += ["--check"]
+    if form.getfirst("tags"):
+        tags = form.getfirst("tags").strip()
+        if not re.match(r"^[A-Za-z0-9_,.-]+$", tags):
+            render_form("Invalid characters in tags.")
+            return
+        cmd += ["--tags", tags]
+
+    cmd.append(playbook_path)
+
+    # Optional sudo wrapper (tighten via sudoers)
+    if USE_SUDO:
+        cmd = [SUDO_BIN, "-n", "--"] + cmd
+
+    # Environment (minimal, can set ANSIBLE_CONFIG if needed)
+    env = os.environ.copy()
+    env["LANG"] = "C.UTF-8"
+
+    # Execute
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            text=True,
+            timeout=RUN_TIMEOUT_SECS,
+        )
+        output = proc.stdout
+        rc = proc.returncode
+    except subprocess.TimeoutExpired as e:
+        output = (e.output or "") + f"\nERROR: Execution timed out after {RUN_TIMEOUT_SECS}s.\n"
+        rc = 124
+    finally:
+        if tmp_inv_path and Path(tmp_inv_path).exists():
+            try:
+                os.unlink(tmp_inv_path)
+            except Exception:
+                pass
+
+    # Render results
+    header_ok()
+    status = "✅ SUCCESS" if rc == 0 else f"❌ FAILED (rc={rc})"
+    safe_cmd = " ".join(html.escape(x) for x in cmd)
+    print(f"""
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Run Result — Ansible Playbook CGI Runner</title>
+  <style>
+    body {{ font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
+    .card {{ max-width: 1000px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }}
+    pre {{ background: #0b1020; color: #d1e7ff; padding: 12px; border-radius: 8px; overflow-x: auto; }}
+    .btn {{ background: #0d6efd; color: #fff; padding: 8px 14px; border: 0; border-radius: 8px; text-decoration: none; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>{status}</h1>
+    <p><strong>Command:</strong> <code>{safe_cmd}</code></p>
+    <h3>Output</h3>
+    <pre>{html.escape(output)}</pre>
+    <p><a class="btn" href="">Run another</a></p>
+  </div>
+</body>
+</html>
+""")
+
+
+def main():
+    method = os.environ.get("REQUEST_METHOD", "GET").upper()
+    if method == "POST":
+        form = cgi.FieldStorage()
+        do_run(form)
+    else:
+        header_ok()
+        render_form()
+
+
+if _name_ == "_main_":
+    main()
