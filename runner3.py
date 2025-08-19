@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 import cgi
 import cgitb
@@ -14,6 +15,7 @@ from pathlib import Path
 
 cgitb.enable()
 
+# --- CONFIG ---
 PLAYBOOKS = {
     "test-pb": "/var/pb/test-playbook.yml",
     "upgrade": "/opt/ansible/playbooks/upgrade.yml",
@@ -30,14 +32,21 @@ DEFAULT_USER = os.environ.get("ANSIBLE_SSH_USER", "ansadmin")
 RUN_TIMEOUT_SECS = 3600
 USE_SUDO = False
 SUDO_BIN = shutil.which("sudo") or "/usr/bin/sudo"
-RUN_HOME = "/var/lib/www-ansible/home"
-RUN_TMP = "/var/lib/www-ansible/tmp"
 
+# --- SAFE RUNTIME DIRECTORIES ---
+RUN_HOME = Path(tempfile.gettempdir()) / "www-ansible" / "home"
+RUN_HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+RUN_TMP = Path(tempfile.gettempdir()) / "www-ansible" / "tmp"
+RUN_TMP.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+# --- VALIDATION ---
 HOST_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_.,-]+$")
 TAGS_RE = re.compile(r"^[A-Za-z0-9_,.-]+$")
 USER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
+# --- HELPERS ---
 def header_ok():
     print("Content-Type: text/html; charset=utf-8")
     print()
@@ -56,6 +65,7 @@ def parse_inventory_hosts(inv_path: str):
                 hosts.append(host)
     return sorted(set(hosts))
 
+# --- HTML FORM ---
 def render_form(msg: str = "", inventory_key: str = ""):
     header_ok()
     playbook_opts = "\n".join(
@@ -70,10 +80,10 @@ def render_form(msg: str = "", inventory_key: str = ""):
     print(f"""<!DOCTYPE html>
 <html>
 <head>
-  <meta charset=\"utf-8\" />
+  <meta charset="utf-8" />
   <title>Ansible Playbook CGI Runner</title>
   <style>
-    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
+    body {{ font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
     .card {{ max-width: 900px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }}
     h1 {{ margin-top: 0; }}
     label {{ display:block; margin: 12px 0 6px; font-weight: 600; }}
@@ -114,7 +124,6 @@ def render_form(msg: str = "", inventory_key: str = ""):
       <label for="hosts">Hostnames (when not using inventory)</label>
       <input id="hosts" name="hosts" type="text" placeholder="host1,host2.example.com (optional)" />
       <div class="muted">If provided, a temporary inventory with group [targets] will be created.</div>
-
 """)
     if inventory_key in INVENTORIES:
         try:
@@ -159,6 +168,7 @@ def render_form(msg: str = "", inventory_key: str = ""):
 </html>
 """)
 
+# --- RUN COMMAND ---
 def do_run(form: cgi.FieldStorage):
     if not ANSIBLE_BIN or not os.path.exists(ANSIBLE_BIN):
         render_form(f"ansible-playbook not found at: {ANSIBLE_BIN}")
@@ -239,12 +249,9 @@ def do_run(form: cgi.FieldStorage):
 
     env = os.environ.copy()
     env.setdefault("LANG", "C.UTF-8")
-    env.setdefault("HOME", RUN_HOME)
-    env.setdefault("TMPDIR", RUN_TMP)
+    env.setdefault("HOME", str(RUN_HOME))
+    env.setdefault("TMPDIR", str(RUN_TMP))
     env.setdefault("ANSIBLE_HOST_KEY_CHECKING", "False")
-
-    Path(RUN_HOME).mkdir(parents=True, exist_ok=True)
-    Path(RUN_TMP).mkdir(parents=True, exist_ok=True)
 
     try:
         proc = subprocess.run(
@@ -264,11 +271,6 @@ def do_run(form: cgi.FieldStorage):
     except Exception:
         header_ok()
         print(f"<pre>{html.escape(traceback.format_exc())}</pre>")
-        if tmp_inv_path and Path(tmp_inv_path).exists():
-            try:
-                os.unlink(tmp_inv_path)
-            except Exception:
-                pass
         return
     finally:
         if tmp_inv_path and Path(tmp_inv_path).exists():
@@ -283,7 +285,7 @@ def do_run(form: cgi.FieldStorage):
     print(f"""<!DOCTYPE html>
 <html>
 <head>
-  <meta charset=\"utf-8\" />
+  <meta charset="utf-8" />
   <title>Run Result — Ansible Playbook CGI Runner</title>
   <style>
     body {{ font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
@@ -304,27 +306,29 @@ def do_run(form: cgi.FieldStorage):
 </html>
 """)
 
+# --- DIAGNOSTICS ---
 def diagnostics():
     header_ok()
     pb_list = "\n".join(f"{k}: {v}" for k, v in PLAYBOOKS.items())
     inv_list = "\n".join(f"{k}: {v}" for k, v in INVENTORIES.items())
     exists = Path(ANSIBLE_BIN).exists()
     print(f"""<!DOCTYPE html>
-<html><head><meta charset=\"utf-8\"><title>Diagnostics</title></head>
-<body style=\"font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:24px;\">
+<html><head><meta charset="utf-8"><title>Diagnostics</title></head>
+<body style="font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:24px;">
 <h1>Diagnostics</h1>
 <ul>
   <li>ANSIBLE_BIN exists: <strong>{'yes' if exists else 'no'}</strong> ({html.escape(ANSIBLE_BIN)})</li>
-  <li>RUN_HOME: {html.escape(RUN_HOME)}</li>
-  <li>RUN_TMP: {html.escape(RUN_TMP)}</li>
+  <li>RUN_HOME: {html.escape(str(RUN_HOME))}</li>
+  <li>RUN_TMP: {html.escape(str(RUN_TMP))}</li>
 </ul>
 <h3>Playbooks</h3>
 <pre>{html.escape(pb_list)}</pre>
 <h3>Inventories</h3>
 <pre>{html.escape(inv_list)}</pre>
-<p><a href=\"./ansible_runner.py\">Back</a></p>
+<p><a href="./ansible_runner.py">Back</a></p>
 </body></html>""")
 
+# --- HOST VALIDATION ---
 def validate_hosts_csv(hosts_csv: str):
     hosts = []
     for h in filter(None, [x.strip() for x in hosts_csv.split(",")]):
@@ -335,6 +339,7 @@ def validate_hosts_csv(hosts_csv: str):
         raise ValueError("No valid hostnames provided")
     return hosts
 
+# --- MAIN ENTRY ---
 def main():
     try:
         method = os.environ.get("REQUEST_METHOD", "GET").upper()
