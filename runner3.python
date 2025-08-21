@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 cgitb.enable()
@@ -342,8 +343,11 @@ def run_playbook(form: cgi.FieldStorage):
     playbook_path  = PLAYBOOKS[playbook_key]
     inventory_path = INVENTORIES[inventory_key]
 
+    # Ensure base dirs exist
     Path(RUN_HOME).mkdir(parents=True, exist_ok=True)
     Path(RUN_TMP).mkdir(parents=True, exist_ok=True)
+    local_tmp = os.path.join(RUN_TMP, "ansible-local")
+    Path(local_tmp).mkdir(parents=True, exist_ok=True)
 
     cmd = [ANSIBLE_BIN, "-i", inventory_path, playbook_path, "--limit", ",".join(hosts), "-u", user]
     if do_check:
@@ -360,11 +364,18 @@ def run_playbook(form: cgi.FieldStorage):
     if USE_SUDO:
         cmd = [SUDO_BIN, "-n", "--"] + cmd
 
+    # ---- OVERRIDE ENV (important)
     env = os.environ.copy()
-    env.setdefault("LANG", "C.UTF-8")
-    env.setdefault("HOME", RUN_HOME)
-    env.setdefault("TMPDIR", RUN_TMP)
-    env.setdefault("ANSIBLE_HOST_KEY_CHECKING", "False")
+    env["LANG"] = "C.UTF-8"
+    env["HOME"] = RUN_HOME                      # force writable HOME for web user
+    env["TMPDIR"] = RUN_TMP                     # force writable TMP
+    env["ANSIBLE_LOCAL_TEMP"] = local_tmp       # avoid ~/.ansible/tmp
+    env["ANSIBLE_REMOTE_TMP"] = "/tmp"
+    env["ANSIBLE_HOST_KEY_CHECKING"] = "False"
+    env["ANSIBLE_SSH_ARGS"] = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+    # Python version–safe text mode
+    TEXT_KW = {"text": True} if sys.version_info >= (3, 7) else {"universal_newlines": True}
 
     try:
         proc = subprocess.run(
@@ -372,9 +383,9 @@ def run_playbook(form: cgi.FieldStorage):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=env,
-            text=True,
             timeout=RUN_TIMEOUT_SECS,
-            cwd=Path(playbook_path).parent
+            cwd=Path(playbook_path).parent,
+            **TEXT_KW
         )
         output = proc.stdout
         rc = proc.returncode
@@ -386,7 +397,7 @@ def run_playbook(form: cgi.FieldStorage):
         print("<pre>{}</pre>".format(safe(str(e))))
         return
 
-    h    # Render result
+    # Render result
     header_ok()
     status = "✅ SUCCESS" if rc == 0 else "❌ FAILED (rc=%d)" % rc
     safe_cmd = " ".join(safe(x) for x in cmd)
