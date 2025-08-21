@@ -38,8 +38,13 @@ RUN_TIMEOUT_SECS = 3600
 USE_SUDO = False
 SUDO_BIN = shutil.which("sudo") or "/usr/bin/sudo"
 
-RUN_HOME = "/var/lib/www-ansible/home"
-RUN_TMP  = "/var/lib/www-ansible/tmp"
+# --- SAFER PATHS (writable by web user) ---
+RUN_HOME = "/tmp/www-ansible/home"
+RUN_TMP  = "/tmp/www-ansible/tmp"
+
+# Ensure base dirs exist at startup
+Path(RUN_HOME).mkdir(parents=True, exist_ok=True)
+Path(RUN_TMP).mkdir(parents=True, exist_ok=True)
 
 # Validators
 HOST_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
