@@ -2,11 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Ansible Playbook CGI Runner — Regions + Hosts + Output
-- Regions (INI groups) and multi-host selection
-- Region toggles auto-select/clear their hosts
-- Scrollable hosts list (compact UI)
-- Runs ansible-playbook and shows output in an HTML file
-- Python 3.7 compatible
+- Saves ansible-playbook output into /tmp/ansible_result.html
+- Redirects browser to that HTML file
 """
 
 import cgi
@@ -25,11 +22,9 @@ cgitb.enable()
 # ---------------- CONFIG ----------------
 PLAYBOOKS = {
     "test-pb": "/var/pb/test-playbook.yml",
-    # add more as needed
 }
 INVENTORIES = {
-    "test-inv": "/var/pb/inv.ini",  # your INI with [Chicago], [New York], [California]
-    # add more as needed
+    "test-inv": "/var/pb/inv.ini",
 }
 
 ANSIBLE_BIN = shutil.which("ansible-playbook") or "/usr/bin/ansible-playbook"
@@ -39,13 +34,8 @@ RUN_TIMEOUT_SECS = 3600
 USE_SUDO = False
 SUDO_BIN = shutil.which("sudo") or "/usr/bin/sudo"
 
-# --- SAFER PATHS (writable by web user) ---
-RUN_HOME = "/tmp/www-ansible/home"
-RUN_TMP = "/tmp/www-ansible/tmp"
-
-# Ensure base dirs exist
-Path(RUN_HOME).mkdir(parents=True, exist_ok=True)
-Path(RUN_TMP).mkdir(parents=True, exist_ok=True)
+# --- Output file ---
+HTML_RESULT_FILE = "/tmp/ansible_result.html"
 
 # Validators
 HOST_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -54,63 +44,13 @@ TAGS_RE = re.compile(r"^[A-Za-z0-9_,.-]+$")
 
 
 # ---------------- UTIL ----------------
-def header_ok():
-    print("Content-Type: text/html; charset=utf-8")
-    print()
-
-
 def safe(s: str) -> str:
     return html.escape(s or "")
 
 
-def parse_ini_inventory_groups(path: str):
-    groups = {}
-    current = None
-    if not os.path.exists(path):
-        return {}
-
-    with open(path, "r") as f:
-        for raw in f:
-            line = raw.strip()
-            if not line or line.startswith("#") or line.startswith(";"):
-                continue
-            if line.startswith("[") and line.endswith("]"):
-                current = line[1:-1].strip()
-                groups.setdefault(current, [])
-                continue
-            if current:
-                token = line.split()[0].split("=")[0].strip()
-                if token:
-                    if token not in groups[current]:
-                        groups[current].append(token)
-
-    for k in ("all", "ungrouped"):
-        if k in groups and not groups[k]:
-            groups.pop(k, None)
-
-    for k in groups:
-        groups[k] = sorted(groups[k])
-    return dict(sorted(groups.items(), key=lambda kv: kv[0].lower()))
-
-
-def get_inventory_maps(inv_key: str):
-    path = INVENTORIES.get(inv_key or "", "")
-    if not path:
-        return {}, [], {}
-    groups_map = parse_ini_inventory_groups(path)
-
-    host_groups = {}
-    for g, hosts in groups_map.items():
-        for h in hosts:
-            host_groups.setdefault(h, []).append(g)
-
-    all_hosts = sorted(host_groups.keys(), key=str.lower)
-    return groups_map, all_hosts, host_groups
-
-
 # ---------------- RENDER ----------------
 def render_form(msg: str, form: cgi.FieldStorage):
-    header_ok()
+    print("Content-Type: text/html; charset=utf-8\n")
     print("<html><head><title>Ansible Runner</title></head><body>")
     if msg:
         print("<p style='color:red;'><b>{}</b></p>".format(safe(msg)))
@@ -119,45 +59,26 @@ def render_form(msg: str, form: cgi.FieldStorage):
     print('<form method="post">')
     print('<input type="hidden" name="action" value="run">')
 
-    # Playbooks
-    print("<p>Playbook:<br>")
-    print('<select name="playbook">')
+    print("<p>Playbook:<br><select name='playbook'>")
     for k in PLAYBOOKS:
         sel = " selected" if form.getfirst("playbook") == k else ""
-        print('<option value="{}"{}>{}</option>'.format(safe(k), sel, safe(k)))
+        print(f"<option value='{safe(k)}'{sel}>{safe(k)}</option>")
     print("</select></p>")
 
-    # Inventories
-    print("<p>Inventory:<br>")
-    print('<select name="inventory_key">')
+    print("<p>Inventory:<br><select name='inventory_key'>")
     for k in INVENTORIES:
         sel = " selected" if form.getfirst("inventory_key") == k else ""
-        print('<option value="{}"{}>{}</option>'.format(safe(k), sel, safe(k)))
+        print(f"<option value='{safe(k)}'{sel}>{safe(k)}</option>")
     print("</select></p>")
 
-    print("<p>Hosts (comma separated):<br>")
-    print('<input type="text" name="hosts" value="{}">'.format(safe(",".join(form.getlist("hosts")))))
-    print("</p>")
-
-    print("<p>User:<br>")
-    print('<input type="text" name="user" value="{}">'.format(safe(form.getfirst("user") or DEFAULT_USER)))
-    print("</p>")
-
-    print("<p>Tags:<br>")
-    print('<input type="text" name="tags" value="{}">'.format(safe(form.getfirst("tags") or "")))
-    print("</p>")
-
-    print('<p><label><input type="checkbox" name="check" value="1"> Check mode</label></p>')
-    print('<p><label><input type="checkbox" name="become" value="1"> Become (sudo)</label></p>')
-
-    print("<p>Password:<br>")
-    print('<input type="password" name="password"></p>')
-
-    print("<p>Become Password:<br>")
-    print('<input type="password" name="become_pass"></p>')
-
-    print('<p><input type="submit" value="Run"></p>')
-    print("</form></body></html>")
+    print(f"<p>Hosts:<br><input type='text' name='hosts' value='{safe(','.join(form.getlist('hosts')))}'></p>")
+    print(f"<p>User:<br><input type='text' name='user' value='{safe(form.getfirst('user') or DEFAULT_USER)}'></p>")
+    print(f"<p>Tags:<br><input type='text' name='tags' value='{safe(form.getfirst('tags') or '')}'></p>")
+    print("<p><label><input type='checkbox' name='check' value='1'> Check mode</label></p>")
+    print("<p><label><input type='checkbox' name='become' value='1'> Become (sudo)</label></p>")
+    print("<p>Password:<br><input type='password' name='password'></p>")
+    print("<p>Become Password:<br><input type='password' name='become_pass'></p>")
+    print("<p><input type='submit' value='Run'></p></form></body></html>")
 
 
 # ---------------- RUN ----------------
@@ -184,7 +105,7 @@ def run_playbook(form: cgi.FieldStorage):
         return
     for h in hosts:
         if not HOST_RE.match(h):
-            render_form("Invalid hostname: {}".format(h), form)
+            render_form(f"Invalid hostname: {h}", form)
             return
     if not USER_RE.match(user):
         render_form("Invalid SSH user.", form)
@@ -196,11 +117,6 @@ def run_playbook(form: cgi.FieldStorage):
     playbook_path = PLAYBOOKS[playbook_key]
     inventory_path = INVENTORIES[inventory_key]
 
-    Path(RUN_HOME).mkdir(parents=True, exist_ok=True)
-    Path(RUN_TMP).mkdir(parents=True, exist_ok=True)
-    local_tmp = os.path.join(RUN_TMP, "ansible-local")
-    Path(local_tmp).mkdir(parents=True, exist_ok=True)
-
     cmd = [ANSIBLE_BIN, "-i", inventory_path, playbook_path, "--limit", ",".join(hosts), "-u", user]
     if do_check:
         cmd.append("--check")
@@ -209,19 +125,15 @@ def run_playbook(form: cgi.FieldStorage):
     if tags:
         cmd += ["--tags", tags]
     if ssh_pass:
-        cmd += ["-e", "ansible_password={}".format(ssh_pass)]
+        cmd += ["-e", f"ansible_password={ssh_pass}"]
     if become_pass:
-        cmd += ["-e", "ansible_become_password={}".format(become_pass)]
+        cmd += ["-e", f"ansible_become_password={become_pass}"]
 
     if USE_SUDO:
         cmd = [SUDO_BIN, "-n", "--"] + cmd
 
     env = os.environ.copy()
     env["LANG"] = "C.UTF-8"
-    env["HOME"] = RUN_HOME
-    env["TMPDIR"] = RUN_TMP
-    env["ANSIBLE_LOCAL_TEMP"] = local_tmp
-    env["ANSIBLE_REMOTE_TMP"] = "/tmp"
     env["ANSIBLE_HOST_KEY_CHECKING"] = "False"
     env["ANSIBLE_SSH_ARGS"] = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
@@ -240,17 +152,16 @@ def run_playbook(form: cgi.FieldStorage):
         output = proc.stdout
         rc = proc.returncode
     except subprocess.TimeoutExpired as e:
-        output = (e.output or "") + "\nERROR: Execution timed out after {}s.\n".format(RUN_TIMEOUT_SECS)
+        output = (e.output or "") + f"\nERROR: Execution timed out after {RUN_TIMEOUT_SECS}s.\n"
         rc = 124
     except Exception as e:
-        header_ok()
-        print("<pre>{}</pre>".format(safe(str(e))))
+        print("Content-Type: text/html; charset=utf-8\n")
+        print(f"<pre>{safe(str(e))}</pre>")
         return
 
-    # ---- Write HTML output file ----
-    html_output_path = os.path.join(RUN_HOME, "ansible_result.html")
+    # ---- Write HTML file in /tmp ----
     try:
-        with open(html_output_path, "w", encoding="utf-8") as f:
+        with open(HTML_RESULT_FILE, "w", encoding="utf-8") as f:
             f.write("<html><head><meta charset='utf-8'>")
             f.write("<title>Ansible Playbook Result</title>")
             f.write("<style>")
@@ -258,19 +169,19 @@ def run_playbook(form: cgi.FieldStorage):
             f.write("h2 { color: #4ec9b0; }")
             f.write("pre { white-space: pre-wrap; word-wrap: break-word; background: #252526; padding: 15px; border-radius: 8px; }")
             f.write("</style></head><body>")
-            f.write("<h2>Playbook Result — {}</h2>".format(safe(playbook_key)))
-            f.write("<p><b>Return Code:</b> {}</p>".format(rc))
-            f.write("<pre>{}</pre>".format(safe(output)))
+            f.write(f"<h2>Playbook Result — {safe(playbook_key)}</h2>")
+            f.write(f"<p><b>Return Code:</b> {rc}</p>")
+            f.write(f"<pre>{safe(output)}</pre>")
             f.write("</body></html>")
     except Exception as e:
-        header_ok()
-        print("<pre>Failed to write HTML report: {}</pre>".format(safe(str(e))))
+        print("Content-Type: text/html; charset=utf-8\n")
+        print(f"<pre>Failed to write HTML report: {safe(str(e))}</pre>")
         return
 
-    # ---- Serve HTML back to browser ----
-    header_ok()
-    with open(html_output_path, "r", encoding="utf-8") as f:
-        print(f.read())
+    # ---- Redirect browser ----
+    print("Status: 302 Found")
+    print("Location: /ansible_result.html")  # must be served by webserver
+    print()
 
 
 # ---------------- MAIN ----------------
@@ -283,8 +194,8 @@ def main():
         else:
             render_form("", form)
     except Exception:
-        header_ok()
-        print("<pre>{}</pre>".format(safe(traceback.format_exc())))
+        print("Content-Type: text/html; charset=utf-8\n")
+        print(f"<pre>{safe(traceback.format_exc())}</pre>")
 
 
 if __name__ == "__main__":
