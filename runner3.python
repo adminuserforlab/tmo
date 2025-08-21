@@ -1,0 +1,440 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Ansible Playbook CGI Runner — Regions + Hosts + Output
+- Regions (INI groups) and multi-host selection
+- Region toggles auto-select/clear their hosts
+- Scrollable hosts list (compact UI)
+- Runs ansible-playbook and shows output inline
+- Python 3.7 compatible
+"""
+
+import cgi
+import cgitb
+import html
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+cgitb.enable()
+
+# ---------------- CONFIG ----------------
+PLAYBOOKS = {
+    "test-pb": "/var/pb/test-playbook.yml",
+    # add more as needed
+}
+INVENTORIES = {
+    "test-inv": "/var/pb/inv.ini",  # your INI with [Chicago], [New York], [California]
+    # add more as needed
+}
+
+ANSIBLE_BIN = shutil.which("ansible-playbook") or "/usr/bin/ansible-playbook"
+DEFAULT_USER = os.environ.get("ANSIBLE_SSH_USER", "ansadmin")
+RUN_TIMEOUT_SECS = 3600
+
+USE_SUDO = False
+SUDO_BIN = shutil.which("sudo") or "/usr/bin/sudo"
+
+RUN_HOME = "/var/lib/www-ansible/home"
+RUN_TMP  = "/var/lib/www-ansible/tmp"
+
+# Validators
+HOST_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+TOKEN_RE = re.compile(r"^[A-Za-z0-9_.,-]+$")
+USER_RE  = re.compile(r"^[A-Za-z0-9_.-]+$")
+TAGS_RE  = re.compile(r"^[A-Za-z0-9_,.-]+$")
+
+
+# ---------------- UTIL ----------------
+def header_ok():
+    print("Content-Type: text/html; charset=utf-8")
+    print()
+
+
+def safe(s: str) -> str:
+    return html.escape(s or "")
+
+
+def parse_ini_inventory_groups(path: str):
+    """
+    Parse simple INI Ansible inventory with groups/hosts.
+    Returns:
+      groups: {group_name: [host1, ...]}
+    """
+    groups = {}
+    current = None
+    if not os.path.exists(path):
+        return {}
+
+    with open(path, "r") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or line.startswith(";"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                current = line[1:-1].strip()
+                groups.setdefault(current, [])
+                continue
+            if current:
+                token = line.split()[0].split("=")[0].strip()
+                if token:
+                    if token not in groups[current]:
+                        groups[current].append(token)
+    # prune empty meta groups if present
+    for k in ("all", "ungrouped"):
+        if k in groups and not groups[k]:
+            groups.pop(k, None)
+
+    # ensure deterministic order
+    for k in groups:
+        groups[k] = sorted(groups[k])
+    return dict(sorted(groups.items(), key=lambda kv: kv[0].lower()))
+
+
+def get_inventory_maps(inv_key: str):
+    """
+    From an inventory key -> (groups_map, all_hosts_sorted, host->groups map)
+    """
+    path = INVENTORIES.get(inv_key or "", "")
+    if not path:
+        return {}, [], {}
+    groups_map = parse_ini_inventory_groups(path)
+
+    host_groups = {}
+    for g, hosts in groups_map.items():
+        for h in hosts:
+            host_groups.setdefault(h, []).append(g)
+
+    all_hosts = sorted(host_groups.keys(), key=str.lower)
+    return groups_map, all_hosts, host_groups
+
+
+# ---------------- RENDER ----------------
+def render_form(msg: str = "", form: cgi.FieldStorage = None):
+    header_ok()
+    if form is None:
+        form = cgi.FieldStorage()
+
+    selected_playbook = form.getfirst("playbook", "")
+    inventory_key     = form.getfirst("inventory_key", "")
+    selected_regions  = form.getlist("regions")
+    posted_hosts      = form.getlist("hosts")
+
+    groups_map, all_hosts, host_groups = get_inventory_maps(inventory_key)
+
+    # Build dropdowns
+    playbook_opts = "\n".join(
+        '<option value="{k}" {sel}>{k} — {v}</option>'.format(
+            k=safe(k), v=safe(v), sel=("selected" if k == selected_playbook else "")
+        )
+        for k, v in PLAYBOOKS.items()
+    )
+    inv_opts = "\n".join(
+        '<option value="{k}" {sel}>{k} — {v}</option>'.format(
+            k=safe(k), v=safe(v), sel=("selected" if k == inventory_key else "")
+        )
+        for k, v in INVENTORIES.items()
+    )
+
+    # Regions (groups) checklist (no default selection; user chooses)
+    if groups_map:
+        regions_html = "\n".join(
+            '<label><input type="checkbox" name="regions" value="{g}" {chk}/> {g} ({n})</label>'.format(
+                g=safe(group), n=len(groups_map[group]),
+                chk=("checked" if group in selected_regions else "")
+            )
+            for group in groups_map
+        )
+    else:
+        regions_html = "<p class='muted'>No regions to show. Select an inventory first.</p>"
+
+    # Hosts list: show ALL hosts from inventory (compact scroll box).
+    # Each host carries its groups in a data attribute for JS syncing.
+    if all_hosts:
+        # initial check state:
+        #  - if user posted hosts, preserve them
+        #  - else, leave unchecked (JS sets from region selections)
+        hosts_html = "\n".join(
+            '<label><input type="checkbox" name="hosts" value="{h}" data-groups="{gs}" {chk}/> {h}</label>'.format(
+                h=safe(h),
+                gs=safe(",".join(host_groups.get(h, []))),
+                chk=("checked" if posted_hosts and h in posted_hosts else "")
+            )
+            for h in all_hosts
+        )
+    else:
+        hosts_html = "<p class='muted'>No hosts to show.</p>"
+
+    user_val   = safe(form.getfirst("user", DEFAULT_USER))
+    tags_val   = safe(form.getfirst("tags", ""))
+    check_val  = "checked" if form.getfirst("check") else ""
+    become_val = "checked" if (form.getfirst("become") or not form) else ""
+
+    print("""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Ansible Playbook CGI Runner</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
+    .card { max-width: 900px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }
+    h1 { margin-top: 0; }
+    label { display:block; margin: 12px 0 6px; font-weight: 600; }
+    select, input[type=text], input[type=password] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .muted { color: #666; font-size: 0.95em; }
+    .btn { background: #0d6efd; color: #fff; padding: 10px 16px; border: 0; border-radius: 8px; cursor: pointer; }
+    .warn { background: #fff3cd; border: 1px solid #ffeeba; padding: 8px 12px; border-radius: 8px; }
+    .group-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-gap: 8px; }
+    .hosts-box { max-height: 260px; overflow-y: auto; padding: 8px; border: 1px solid #eee; border-radius: 8px; background:#fff; }
+    .toolbar { display:flex; gap:8px; margin: 6px 0 10px; }
+    .tbtn { padding:6px 10px; border:1px solid #ccc; border-radius:6px; background:#f8f9fa; cursor:pointer; }
+    pre { background: #0b1020; color: #d1e7ff; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; }
+  </style>
+  <script>
+    function selectAllHosts(val) {
+      var boxes = document.querySelectorAll('input[name="hosts"]');
+      for (var i=0; i<boxes.length; i++) { boxes[i].checked = val; }
+    }
+    function toggleInventorySubmit() {
+      document.getElementById('action').value = 'refresh';
+      document.getElementById('runnerForm').submit();
+    }
+    function syncRegionToHosts() {
+      var selected = new Set();
+      var r = document.querySelectorAll('input[name="regions"]:checked');
+      for (var i=0;i<r.length;i++) selected.add(r[i].value);
+      var hosts = document.querySelectorAll('input[name="hosts"]');
+      for (var j=0;j<hosts.length;j++) {
+        var cb = hosts[j];
+        var groups = (cb.getAttribute('data-groups') || '').split(',');
+        var match = false;
+        for (var k=0;k<groups.length;k++) {
+          if (selected.has(groups[k])) { match = true; break; }
+        }
+        if (selected.size > 0) {
+          cb.checked = match;   // auto-select hosts of selected regions
+        } // if no region selected, leave user’s manual host picks untouched
+      }
+    }
+    document.addEventListener('DOMContentLoaded', function() {
+      // Wire region checkboxes to auto-select hosts
+      var regionCbs = document.querySelectorAll('input[name="regions"]');
+      for (var i=0;i<regionCbs.length;i++) {
+        regionCbs[i].addEventListener('change', syncRegionToHosts);
+      }
+      // Run once in case regions were pre-selected (e.g., after validation error)
+      syncRegionToHosts();
+    });
+  </script>
+</head>
+<body>
+  <div class="card">
+    <h1>Ansible Playbook CGI Runner</h1>
+""")
+    if msg:
+        print("    <div class='warn'>{}</div>".format(safe(msg)))
+
+    print("""
+    <form id="runnerForm" method="post" action="">
+      <input type="hidden" name="action" id="action" value="refresh" />
+      <label for="playbook">Playbook (whitelisted)</label>
+      <select id="playbook" name="playbook" required>
+        <option value="" {sel}>Select a playbook…</option>
+        {playbook_opts}
+      </select>
+
+      <label for="inventory_key">Inventory (whitelisted)</label>
+      <select id="inventory_key" name="inventory_key" onchange="toggleInventorySubmit()">
+        <option value="">(None — I’ll enter hostnames)</option>
+        {inv_opts}
+      </select>
+      <div class="muted">Pick an inventory, then choose regions and/or adjust hosts below.</div>
+
+      <label>Regions (groups) in inventory:</label>
+      <div class="group-grid">
+        {regions_html}
+      </div>
+      <div class="toolbar">
+        <button type="button" class="tbtn" onclick="selectAllHosts(true)">Select all hosts</button>
+        <button type="button" class="tbtn" onclick="selectAllHosts(false)">Select none</button>
+      </div>
+
+      <label>Hosts (from selected inventory):</label>
+      <div class="hosts-box">
+        {hosts_html}
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="user">SSH user (-u)</label>
+          <input id="user" name="user" type="text" value="{user_val}" />
+        </div>
+        <div>
+          <label for="tags">--tags (optional, comma-separated)</label>
+          <input id="tags" name="tags" type="text" value="{tags_val}" placeholder="setup,deploy" />
+        </div>
+      </div>
+
+      <label for="password">SSH password</label>
+      <input id="password" name="password" type="password" />
+
+      <label for="become_pass">Become password (optional)</label>
+      <input id="become_pass" name="become_pass" type="password" />
+
+      <label><input type="checkbox" name="check" value="1" {check_val}/> Dry run (--check)</label>
+      <label><input type="checkbox" name="become" value="1" {become_val}/> Become (-b)</label>
+
+      <div style="margin-top:16px;">
+        <button class="btn" type="submit" onclick="document.getElementById('action').value='run'">Run Playbook</button>
+      </div>
+    </form>
+  </div>
+</body>
+</html>
+""".format(
+        sel=("selected" if not selected_playbook else ""),
+        playbook_opts=playbook_opts,
+        inv_opts=inv_opts,
+        regions_html=regions_html,
+        hosts_html=hosts_html,
+        user_val=user_val,
+        tags_val=tags_val,
+        check_val=check_val,
+        become_val=become_val
+    ))
+
+
+# ---------------- RUN ----------------
+def run_playbook(form: cgi.FieldStorage):
+    playbook_key = form.getfirst("playbook", "")
+    inventory_key = form.getfirst("inventory_key", "")
+    hosts = form.getlist("hosts")
+    user  = (form.getfirst("user") or DEFAULT_USER).strip()
+    tags  = (form.getfirst("tags") or "").strip()
+    do_check  = (form.getfirst("check") == "1")
+    do_become = (form.getfirst("become") == "1")
+    ssh_pass    = (form.getfirst("password") or "").strip()
+    become_pass = (form.getfirst("become_pass") or "").strip()
+
+    if playbook_key not in PLAYBOOKS:
+        render_form("Invalid playbook selected.", form)
+        return
+    if inventory_key not in INVENTORIES:
+        render_form("Invalid inventory selected.", form)
+        return
+    if not hosts:
+        render_form("No hosts selected.", form)
+        return
+    for h in hosts:
+        if not HOST_RE.match(h):
+            render_form("Invalid hostname: {}".format(h), form)
+            return
+    if not USER_RE.match(user):
+        render_form("Invalid SSH user.", form)
+        return
+    if tags and not TAGS_RE.match(tags):
+        render_form("Invalid characters in tags.", form)
+        return
+
+    playbook_path  = PLAYBOOKS[playbook_key]
+    inventory_path = INVENTORIES[inventory_key]
+
+    Path(RUN_HOME).mkdir(parents=True, exist_ok=True)
+    Path(RUN_TMP).mkdir(parents=True, exist_ok=True)
+
+    cmd = [ANSIBLE_BIN, "-i", inventory_path, playbook_path, "--limit", ",".join(hosts), "-u", user]
+    if do_check:
+        cmd.append("--check")
+    if do_become:
+        cmd.append("-b")
+    if tags:
+        cmd += ["--tags", tags]
+    if ssh_pass:
+        cmd += ["-e", "ansible_password={}".format(ssh_pass)]
+    if become_pass:
+        cmd += ["-e", "ansible_become_password={}".format(become_pass)]
+
+    if USE_SUDO:
+        cmd = [SUDO_BIN, "-n", "--"] + cmd
+
+    env = os.environ.copy()
+    env.setdefault("LANG", "C.UTF-8")
+    env.setdefault("HOME", RUN_HOME)
+    env.setdefault("TMPDIR", RUN_TMP)
+    env.setdefault("ANSIBLE_HOST_KEY_CHECKING", "False")
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            text=True,
+            timeout=RUN_TIMEOUT_SECS,
+            cwd=Path(playbook_path).parent
+        )
+        output = proc.stdout
+        rc = proc.returncode
+    except subprocess.TimeoutExpired as e:
+        output = (e.output or "") + "\nERROR: Execution timed out after {}s.\n".format(RUN_TIMEOUT_SECS)
+        rc = 124
+    except Exception as e:
+        header_ok()
+        print("<pre>{}</pre>".format(safe(str(e))))
+        return
+
+    h    # Render result
+    header_ok()
+    status = "✅ SUCCESS" if rc == 0 else "❌ FAILED (rc=%d)" % rc
+    safe_cmd = " ".join(safe(x) for x in cmd)
+
+    html_out = """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Run Result — Ansible Playbook CGI Runner</title>
+  <style>
+    body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
+    .card { max-width: 1000px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }
+    pre { background: #0b1020; color: #d1e7ff; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; }
+    .btn { background: #0d6efd; color: #fff; padding: 8px 14px; border: 0; border-radius: 8px; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>%(status)s</h1>
+    <p><strong>Command:</strong> <code>%(cmd)s</code></p>
+    <h3>Output</h3>
+    <pre>%(out)s</pre>
+    <p><a class="btn" href="">Run another</a></p>
+  </div>
+</body>
+</html>
+""" % {
+        "status": status,
+        "cmd": safe_cmd,
+        "out": safe(output),
+    }
+
+    print(html_out)
+
+
+# ---------------- MAIN ----------------
+def main():
+    try:
+        method = os.environ.get("REQUEST_METHOD", "GET").upper()
+        form = cgi.FieldStorage()
+        if method == "POST" and form.getfirst("action") == "run":
+            run_playbook(form)
+        else:
+            render_form("", form)
+    except Exception:
+        header_ok()
+        import traceback
+        print("<pre>{}</pre>".format(safe(traceback.format_exc())))
+
+if __name__ == "__main__":
+    main()
