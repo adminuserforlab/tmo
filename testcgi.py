@@ -49,7 +49,7 @@ INVENTORIES = {
 }
 
 REPORT_BASES = [
-    "/var/www/cgi-bin/reports",
+    "/tmp",
 ]
 
 ANSIBLE_BIN = shutil.which("ansible-playbook") or "/usr/bin/ansible-playbook"
@@ -58,8 +58,8 @@ RUN_TIMEOUT_SECS = 3600
 USE_SUDO = False
 SUDO_BIN = shutil.which("sudo") or "/usr/bin/sudo"
 
-RUN_HOME = "/var/lib/www-ansible/home"
-RUN_TMP  = "/var/lib/www-ansible/tmp"
+RUN_HOME = "/tmp/www-ansible/home"
+RUN_TMP  = "/tmp/lib/www-ansible/tmp"
 
 HOST_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 USER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
