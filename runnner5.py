@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Ansible Playbook CGI Runner — Regions + Hosts + Output + Reports
-- Regions (INI groups) and multi-host selection
-- Region toggles auto-select/clear their hosts
-- Scrollable hosts list (compact UI)
-- Runs ansible-playbook and shows output inline
-- Browse generated HTML reports securely from allowed directories
+Ansible Playbook CGI Runner — filtered inventories + regions/hosts + output + reports
+- Hides file paths in UI (labels only)
+- Inventory list filtered by selected playbook
+- Regions (INI groups) + scrollable hosts + select all/none
+- Runs ansible-playbook and shows output inline (masked command)
+- Browse generated HTML reports securely
+- Polished UI: Run & Browse buttons identical and aligned
 - Python 3.7 compatible
-- Prefers PASSWORD auth when a password is provided, masks secrets if shown
-- Hides playbook paths AND inventory paths in dropdowns
-- Filters inventory choices by selected playbook
 """
 
 import cgi
@@ -28,53 +26,46 @@ from urllib.parse import quote
 cgitb.enable()
 
 # ---------------- CONFIG ----------------
-# Friendly name -> absolute path
+# Friendly playbook list. Each playbook declares which inventory keys it may use.
 PLAYBOOKS = {
-    # Example: "intel-pb": "/var/www/cgi-bin/health-check.yml",
-    "intel-pb": "/var/www/cgi-bin/intel-check.yml",
-    "amd-pb": "/var/www/cgi-bin/amd-check.yml"
+    # key     -> label shown to user, absolute path (hidden in UI), allowed inventory keys
+    "intel": { "label": "Intel Health Check", "path": "/var/www/cgi-bin/health-check.yml", "inventories": ["intel-inv"] },
+    # Add more:
+    # "db": { "label": "DB Maintenance", "path": "/opt/ansible/playbooks/db-maint.yml", "inventories": ["prod-inv", "dr-inv"] },
 }
 
-# Inventory key -> absolute path
+# All known inventories. The UI shows only labels, never file paths.
 INVENTORIES = {
-    # Example: "intel-inv": "/var/www/cgi-bin/intel.ini",
-    "intel-inv": "/var/www/cgi-bin/intel.ini",
-    "amd-inv": "/var/www/cgi-bin/amd.ini"
+    # key         -> label shown to user, absolute path (hidden), optionally a default region order
+    "intel-inv": { "label": "Intel Inventory", "path": "/var/www/cgi-bin/intel.ini" },
+    # "prod-inv": { "label": "Production", "path": "/opt/ansible/inventory/prod.ini" },
+    # "dr-inv":   { "label": "Disaster Recovery", "path": "/opt/ansible/inventory/dr.ini" },
 }
 
-# Which inventories are allowed per playbook (by key).
-# If a playbook key is missing here, ALL inventories are shown.
-PLAYBOOK_ALLOWED_INVS = {
-    # Show only the intel inventory when "test-pb" (your Intel playbook) is chosen:
-    #"test-pb": ["test-inv"],
-     "intel-pb": ["intel-inv"],
-     "amd-pb": ["amd-inv"]
-}
-
-# Where your playbooks write HTML reports (web-readable roots)
+# Where your playbooks write HTML reports.
 REPORT_BASES = [
     "/var/www/cgi-bin/reports",
 ]
 
+# Ansible binary
 ANSIBLE_BIN = shutil.which("ansible-playbook") or "/usr/bin/ansible-playbook"
-DEFAULT_USER = os.environ.get("ANSIBLE_SSH_USER", "cloud-user")
-RUN_TIMEOUT_SECS = 3600
 
+# Default SSH user shown in the form
+DEFAULT_USER = os.environ.get("ANSIBLE_SSH_USER", "ansadmin")
+
+# Runtime settings
+RUN_TIMEOUT_SECS = 3600
 USE_SUDO = False
 SUDO_BIN = shutil.which("sudo") or "/usr/bin/sudo"
 
-# Writable HOME/TMP for the web user
-RUN_HOME = "/var/www/cgi-bin/www-ansible/home"
-RUN_TMP  = "/var/www/cgi-bin/www-ansible/tmp"
-
-# Show the ansible-playbook command on the results page?
-SHOW_COMMAND = False  # set True only for debugging
+# Writable HOME/TMP for the web user (apache/www-data)
+RUN_HOME = "/var/lib/www-ansible/home"
+RUN_TMP  = "/var/lib/www-ansible/tmp"
 
 # Validators
 HOST_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-TOKEN_RE = re.compile(r"^[A-Za-z0-9_.,-]+$")
-USER_RE  = re.compile(r"^[A-Za-z0-9_.-]+$")
-TAGS_RE  = re.compile(r"^[A-Za-z0-9_,.-]+$")
+USER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+TAGS_RE = re.compile(r"^[A-Za-z0-9_,.-]+$")
 
 
 # ---------------- UTIL ----------------
@@ -84,19 +75,27 @@ def header_ok(ct="text/html; charset=utf-8"):
 
 
 def safe(s: str) -> str:
-    return html.escape(s or "")
+    return html.escape("" if s is None else str(s))
+
+
+def _realpath(p: str) -> str:
+    return os.path.realpath(p)
+
+
+def _is_under(base: str, target: str) -> bool:
+    base_r = _realpath(base)
+    tgt_r  = _realpath(target)
+    return tgt_r == base_r or tgt_r.startswith(base_r + os.sep)
 
 
 def parse_ini_inventory_groups(path: str):
     """
-    Parse simple INI Ansible inventory with groups/hosts.
-    Returns: {group_name: [host1, ...]}
+    Parse very simple INI inventory into {group: [hosts]}.
     """
     groups = {}
     current = None
     if not os.path.exists(path):
         return {}
-
     with open(path, "r") as f:
         for raw in f:
             line = raw.strip()
@@ -111,57 +110,45 @@ def parse_ini_inventory_groups(path: str):
                 if token:
                     if token not in groups[current]:
                         groups[current].append(token)
-
+    # prune meta groups if empty
     for k in ("all", "ungrouped"):
         if k in groups and not groups[k]:
             groups.pop(k, None)
-
+    # sort
     for k in groups:
-        groups[k] = sorted(groups[k])
+        groups[k] = sorted(groups[k], key=str.lower)
     return dict(sorted(groups.items(), key=lambda kv: kv[0].lower()))
 
 
 def get_inventory_maps(inv_key: str):
     """
-    From an inventory key -> (groups_map, all_hosts_sorted, host->groups map)
+    From inventory key -> (groups_map, all_hosts_sorted, host->groups map)
     """
-    path = INVENTORIES.get(inv_key or "", "")
+    meta = INVENTORIES.get(inv_key or "", {})
+    path = meta.get("path", "")
     if not path:
         return {}, [], {}
     groups_map = parse_ini_inventory_groups(path)
-
     host_groups = {}
     for g, hosts in groups_map.items():
         for h in hosts:
             host_groups.setdefault(h, []).append(g)
-
     all_hosts = sorted(host_groups.keys(), key=str.lower)
     return groups_map, all_hosts, host_groups
 
 
-# ---------- REPORTS (secure listing/serving) ----------
-def _realpath(p: str) -> str:
-    return os.path.realpath(p)
-
-
-def _is_under(base: str, target: str) -> bool:
-    base_r = _realpath(base)
-    tgt_r  = _realpath(target)
-    return tgt_r == base_r or tgt_r.startswith(base_r + os.sep)
-
-
+# ---------- Reports ----------
 def find_reports(hosts, since_ts, limit=200):
     """
-    Scan REPORT_BASES for .html files modified since 'since_ts'.
-    If hosts list is non-empty, require host substring to match filename.
-    Returns list of dicts: {"base": base, "rel": relpath, "path": full, "mtime": mtime}
+    Scan REPORT_BASES for .html files modified since since_ts.
+    If hosts provided, filter filenames by substring match.
     """
     out = []
-    host_lowers = [h.lower() for h in hosts] if hosts else []
+    needles = [h.lower() for h in (hosts or [])]
     for base in REPORT_BASES:
         if not os.path.isdir(base):
             continue
-        for root, dirs, files in os.walk(base):
+        for root, _, files in os.walk(base):
             for fn in files:
                 if not fn.lower().endswith(".html"):
                     continue
@@ -172,9 +159,9 @@ def find_reports(hosts, since_ts, limit=200):
                     continue
                 if st.st_mtime < since_ts:
                     continue
-                if host_lowers:
-                    name_lower = fn.lower()
-                    if not any(h in name_lower for h in host_lowers):
+                if needles:
+                    lo = fn.lower()
+                    if not any(n in lo for n in needles):
                         continue
                 rel = os.path.relpath(full, base)
                 out.append({"base": base, "rel": rel, "path": full, "mtime": st.st_mtime})
@@ -191,19 +178,12 @@ def render_reports_list(title, reports, extra_note=""):
             continue
         href = "?action=view_report&b=%d&p=%s" % (bidx, quote(r["rel"]))
         ts   = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["mtime"]))
-        label = "%s — %s" % (r["rel"], ts)
-        items.append('<li><a href="%s" target="_blank">%s</a></li>' % (href, safe(label)))
-
+        items.append('<li><a href="%s" target="_blank">%s — %s</a></li>' % (href, safe(r["rel"]), ts))
     if not items:
         ul = "<p class='muted'>No matching reports found.</p>"
     else:
-        ul = "<ul>\n%s\n</ul>" % ("\n".join(items))
-
-    return """
-    <h3>%s</h3>
-    %s
-    %s
-    """ % (safe(title), ul, ("<p class='muted'>%s</p>" % safe(extra_note) if extra_note else ""))
+        ul = "<ul>\n%s\n</ul>" % "\n".join(items)
+    return "<h3>%s</h3>%s%s" % (safe(title), ul, ("<p class='muted'>%s</p>" % safe(extra_note) if extra_note else ""))
 
 
 def serve_report(form):
@@ -257,12 +237,22 @@ def list_reports_page(form):
   <meta charset="utf-8" />
   <title>Reports Browser</title>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
-    .card { max-width: 1000px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }
-    label { display:block; margin: 12px 0 6px; font-weight: 600; }
-    input[type=text], select { width: 100%%; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
-    .btn { background: #0d6efd; color: #fff; padding: 8px 14px; border: 0; border-radius: 8px; text-decoration: none; cursor:pointer; }
-    .muted { color:#666; }
+    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
+    .card {{ max-width: 1000px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }}
+    label {{ display:block; margin: 12px 0 6px; font-weight: 600; }}
+    input[type=text], select {{ width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }}
+    .btn, .btn:link, .btn:visited {{
+      display:inline-flex; align-items:center; justify-content:center;
+      height:48px; padding:0 22px; font-weight:700; font-size:20px; line-height:1;
+      color:#fff; background:#0d6efd; border:0; border-radius:16px; text-decoration:none; cursor:pointer;
+      box-shadow:0 1px 2px rgba(0,0,0,.06), 0 4px 14px rgba(13,110,253,.25);
+      transition:background .15s ease, transform .02s ease; -webkit-appearance:none; appearance:none;
+    }}
+    button.btn {{ border:0; }}
+    .btn:hover {{ background:#0b5ed7; }} .btn:active {{ transform:translateY(1px); }}
+    .btn:focus {{ outline:none; box-shadow:0 0 0 4px rgba(13,110,253,.25); }}
+    .actions {{ display:flex; gap:16px; margin-top:16px; align-items:center; }}
+    .muted {{ color:#666; }}
   </style>
 </head>
 <body>
@@ -271,88 +261,79 @@ def list_reports_page(form):
     <form method="get" action="">
       <input type="hidden" name="action" value="list_reports" />
       <label for="host">Host contains (optional)</label>
-      <input id="host" name="host" type="text" value="%(host)s" placeholder="e.g. ny1" />
+      <input id="host" name="host" type="text" value="{host}" placeholder="e.g. ny1" />
       <label for="hours">Modified within last N hours</label>
-      <input id="hours" name="hours" type="text" value="%(hours)s" />
-      <div style="margin-top:10px;">
+      <input id="hours" name="hours" type="text" value="{hours}" />
+      <div class="actions">
         <button class="btn" type="submit">Search</button>
         <a class="btn" href="./ansible-runner-cgi.py">Back</a>
       </div>
     </form>
-    %(list_html)s
+    {list_html}
   </div>
 </body>
 </html>
-""" % {
-        "host": safe(host_filter),
-        "hours": hours,
-        "list_html": render_reports_list("Results", reports, "Showing newest first."),
-    }
+""".format(
+        host=safe(host_filter),
+        hours=hours,
+        list_html=render_reports_list("Results", reports, "Showing newest first."),
+    )
     print(html_out)
 
 
 # ---------------- RENDER (FORM) ----------------
-def _allowed_inventory_keys_for_playbook(pb_key: str):
-    """Return the list of inventory keys allowed for this playbook key."""
-    allow = PLAYBOOK_ALLOWED_INVS.get(pb_key)
-    if allow:
-        return [k for k in allow if k in INVENTORIES]
-    return list(INVENTORIES.keys())
-
-
 def render_form(msg: str = "", form: cgi.FieldStorage = None):
     header_ok()
     if form is None:
         form = cgi.FieldStorage()
 
     selected_playbook = form.getfirst("playbook", "")
-    allowed_inv_keys = _allowed_inventory_keys_for_playbook(selected_playbook)
     inventory_key     = form.getfirst("inventory_key", "")
-    if inventory_key and inventory_key not in allowed_inv_keys:
-        inventory_key = ""  # previously chosen inv no longer allowed
-
     selected_regions  = form.getlist("regions")
     posted_hosts      = form.getlist("hosts")
 
+    # Filter inventories based on selected playbook
+    if selected_playbook in PLAYBOOKS:
+        allowed_invs = PLAYBOOKS[selected_playbook]["inventories"]
+    else:
+        # nothing chosen yet: show nothing (forces pick a playbook first)
+        allowed_invs = []
+
     groups_map, all_hosts, host_groups = get_inventory_maps(inventory_key)
 
-    # Playbook dropdown (friendly names only)
+    # Build dropdowns (labels only; hide paths)
     playbook_opts = "\n".join(
-        '<option value="%s" %s>%s</option>' % (
-            safe(k), ("selected" if k == selected_playbook else ""), safe(k)
+        '<option value="{k}" {sel}>{lbl}</option>'.format(
+            k=safe(k), lbl=safe(v["label"]), sel=("selected" if k == selected_playbook else "")
         )
-        for k in PLAYBOOKS.keys()
+        for k, v in PLAYBOOKS.items()
     )
-
-    # Inventory dropdown (filtered by playbook) — FRIENDLY KEYS ONLY (no paths)
     inv_opts = "\n".join(
-        '<option value="%s" %s>%s</option>' % (
-            safe(k),
-            ("selected" if k == inventory_key else ""),
-            safe(k),  # path hidden
+        '<option value="{k}" {sel}>{lbl}</option>'.format(
+            k=safe(k), lbl=safe(INVENTORIES[k]["label"]), sel=("selected" if k == inventory_key else "")
         )
-        for k in allowed_inv_keys
-    ) if allowed_inv_keys else "<option value=''>(No inventories allowed)</option>"
+        for k in allowed_invs
+        if k in INVENTORIES
+    )
 
     # Regions checklist
     if groups_map:
         regions_html = "\n".join(
-            '<label><input type="checkbox" name="regions" value="%s" %s/> %s (%d)</label>' % (
-                safe(group), ("checked" if group in selected_regions else ""), safe(group), len(groups_map[group])
+            '<label><input type="checkbox" name="regions" value="{g}" {chk}/> {g} ({n})</label>'.format(
+                g=safe(group), n=len(groups_map[group]), chk=("checked" if group in selected_regions else "")
             )
             for group in groups_map
         )
     else:
         regions_html = "<p class='muted'>No regions to show. Select an inventory first.</p>"
 
-    # Hosts list: show ALL hosts
+    # Hosts list (scrollable)
     if all_hosts:
         hosts_html = "\n".join(
-            '<label><input type="checkbox" name="hosts" value="%s" data-groups="%s" %s/> %s</label>' % (
-                safe(h),
-                safe(",".join(host_groups.get(h, []))),
-                ("checked" if posted_hosts and h in posted_hosts else ""),
-                safe(h),
+            '<label><input type="checkbox" name="hosts" value="{h}" data-groups="{gs}" {chk}/> {h}</label>'.format(
+                h=safe(h),
+                gs=safe(",".join(host_groups.get(h, []))),
+                chk=("checked" if posted_hosts and h in posted_hosts else "")
             )
             for h in all_hosts
         )
@@ -363,7 +344,7 @@ def render_form(msg: str = "", form: cgi.FieldStorage = None):
     tags_val   = safe(form.getfirst("tags", ""))
     check_val  = "checked" if form.getfirst("check") else ""
     become_val = "checked" if (form.getfirst("become") or not form) else ""
-    msg_html   = ("<div class='warn'>%s</div>" % safe(msg)) if msg else ""
+    msg_html   = ("<div class='warn'>{}</div>".format(safe(msg))) if msg else ""
 
     html_out = """<!DOCTYPE html>
 <html>
@@ -371,78 +352,97 @@ def render_form(msg: str = "", form: cgi.FieldStorage = None):
   <meta charset="utf-8" />
   <title>Ansible Playbook CGI Runner</title>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
-    .card { max-width: 900px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }
-    h1 { margin-top: 0; }
-    label { display:block; margin: 12px 0 6px; font-weight: 600; }
-    select, input[type=text], input[type=password] { width: 100%%; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    .muted { color: #666; font-size: 0.95em; }
-    .btn { background: #0d6efd; color: #fff; padding: 10px 16px; border: 0; border-radius: 8px; cursor: pointer; }
-    .warn { background: #fff3cd; border: 1px solid #ffeeba; padding: 8px 12px; border-radius: 8px; }
-    .group-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-gap: 8px; }
-    .hosts-box { max-height: 260px; overflow-y: auto; padding: 8px; border: 1px solid #eee; border-radius: 8px; background:#fff; }
-    .toolbar { display:flex; gap:8px; margin: 6px 0 10px; }
-    .tbtn { padding:6px 10px; border:1px solid #ccc; border-radius:6px; background:#f8f9fa; cursor:pointer; }
-    pre { background: #0b1020; color: #d1e7ff; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; }
+    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
+    .card {{ max-width: 900px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }}
+    h1 {{ margin-top: 0; }}
+    label {{ display:block; margin: 12px 0 6px; font-weight: 700; font-size: 14px; letter-spacing:.2px; }}
+    select, input[type=text], input[type=password] {{ width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 8px; font-size:16px; }}
+    .row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
+    .muted {{ color: #666; font-size: 0.95em; }}
+    .warn {{ background: #fff3cd; border: 1px solid #ffeeba; padding: 8px 12px; border-radius: 8px; }}
+    .group-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-gap: 8px; }}
+    .hosts-box {{ max-height: 260px; overflow-y: auto; padding: 8px; border: 1px solid #eee; border-radius: 8px; background:#fff; }}
+    .toolbar {{ display:flex; gap:8px; margin: 6px 0 10px; }}
+    .tbtn {{ padding:6px 10px; border:1px solid #ccc; border-radius:6px; background:#f8f9fa; cursor:pointer; }}
+    pre {{ background: #0b1020; color: #d1e7ff; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; }}
+
+    /* Unified buttons */
+    .actions {{ display:flex; gap:16px; margin-top:16px; align-items:center; }}
+    .btn, .btn:link, .btn:visited {{
+      display:inline-flex; align-items:center; justify-content:center;
+      height:48px; padding:0 22px; font-weight:700; font-size:20px; line-height:1;
+      color:#fff; background:#0d6efd; border:0; border-radius:16px; text-decoration:none; cursor:pointer;
+      box-shadow:0 1px 2px rgba(0,0,0,.06), 0 4px 14px rgba(13,110,253,.25);
+      transition:background .15s ease, transform .02s ease; -webkit-appearance:none; appearance:none;
+    }}
+    button.btn {{ border:0; }}
+    .btn:hover {{ background:#0b5ed7; }}
+    .btn:active {{ transform:translateY(1px); }}
+    .btn:focus {{ outline:none; box-shadow:0 0 0 4px rgba(13,110,253,.25); }}
   </style>
   <script>
-    function selectAllHosts(val) {
+    function selectAllHosts(val) {{
       var boxes = document.querySelectorAll('input[name="hosts"]');
-      for (var i=0; i<boxes.length; i++) { boxes[i].checked = val; }
-    }
-    function toggleInventorySubmit() {
+      for (var i=0; i<boxes.length; i++) {{ boxes[i].checked = val; }}
+    }}
+    function toggleInventorySubmit() {{
       document.getElementById('action').value = 'refresh';
       document.getElementById('runnerForm').submit();
-    }
-    function syncRegionToHosts() {
+    }}
+    function onPlaybookChanged() {{
+      // When playbook changes, refresh to re-filter inventories
+      document.getElementById('action').value = 'refresh';
+      document.getElementById('runnerForm').submit();
+    }}
+    function syncRegionToHosts() {{
       var selected = new Set();
       var r = document.querySelectorAll('input[name="regions"]:checked');
       for (var i=0;i<r.length;i++) selected.add(r[i].value);
       var hosts = document.querySelectorAll('input[name="hosts"]');
-      for (var j=0;j<hosts.length;j++) {
+      for (var j=0;j<hosts.length;j++) {{
         var cb = hosts[j];
         var groups = (cb.getAttribute('data-groups') || '').split(',');
         var match = false;
-        for (var k=0;k<groups.length;k++) {
-          if (selected.has(groups[k])) { match = true; break; }
-        }
-        if (selected.size > 0) {
+        for (var k=0;k<groups.length;k++) {{
+          if (selected.has(groups[k])) {{ match = true; break; }}
+        }}
+        if (selected.size > 0) {{
           cb.checked = match;
-        }
-      }
-    }
-    document.addEventListener('DOMContentLoaded', function() {
+        }}
+      }}
+    }}
+    document.addEventListener('DOMContentLoaded', function() {{
       var regionCbs = document.querySelectorAll('input[name="regions"]');
-      for (var i=0;i<regionCbs.length;i++) {
+      for (var i=0;i<regionCbs.length;i++) {{
         regionCbs[i].addEventListener('change', syncRegionToHosts);
-      }
+      }}
       syncRegionToHosts();
-    });
+    }});
   </script>
 </head>
 <body>
   <div class="card">
     <h1>Ansible Playbook CGI Runner</h1>
-    %(msg_html)s
+    {msg_html}
     <form id="runnerForm" method="post" action="">
       <input type="hidden" name="action" id="action" value="refresh" />
-      <label for="playbook">Playbook (whitelisted)</label>
-      <select id="playbook" name="playbook" required onchange="toggleInventorySubmit()">
-        <option value="" %(sel)s>Select a playbook…</option>
-        %(playbook_opts)s
+
+      <label for="playbook">Playbook</label>
+      <select id="playbook" name="playbook" required onchange="onPlaybookChanged()">
+        <option value="" {sel_pb}>Select a playbook…</option>
+        {playbook_opts}
       </select>
 
-      <label for="inventory_key">Inventory (whitelisted)</label>
+      <label for="inventory_key">Inventory</label>
       <select id="inventory_key" name="inventory_key" onchange="toggleInventorySubmit()">
-        <option value="">(None — I’ll enter hostnames)</option>
-        %(inv_opts)s
+        <option value="">(Pick a playbook first)</option>
+        {inv_opts}
       </select>
       <div class="muted">Pick an inventory, then choose regions and/or adjust hosts below.</div>
 
       <label>Regions (groups) in inventory:</label>
       <div class="group-grid">
-        %(regions_html)s
+        {regions_html}
       </div>
       <div class="toolbar">
         <button type="button" class="tbtn" onclick="selectAllHosts(true)">Select all hosts</button>
@@ -451,17 +451,17 @@ def render_form(msg: str = "", form: cgi.FieldStorage = None):
 
       <label>Hosts (from selected inventory):</label>
       <div class="hosts-box">
-        %(hosts_html)s
+        {hosts_html}
       </div>
 
       <div class="row">
         <div>
           <label for="user">SSH user (-u)</label>
-          <input id="user" name="user" type="text" value="%(user_val)s" />
+          <input id="user" name="user" type="text" value="{user_val}" />
         </div>
         <div>
           <label for="tags">--tags (optional, comma-separated)</label>
-          <input id="tags" name="tags" type="text" value="%(tags_val)s" placeholder="setup,deploy" />
+          <input id="tags" name="tags" type="text" value="{tags_val}" placeholder="setup,deploy" />
         </div>
       </div>
 
@@ -471,10 +471,10 @@ def render_form(msg: str = "", form: cgi.FieldStorage = None):
       <label for="become_pass">Become password (optional)</label>
       <input id="become_pass" name="become_pass" type="password" />
 
-      <label><input type="checkbox" name="check" value="1" %(check_val)s/> Dry run (--check)</label>
-      <label><input type="checkbox" name="become" value="1" %(become_val)s/> Become (-b)</label>
+      <label><input type="checkbox" name="check" value="1" {check_val}/> Dry run (--check)</label>
+      <label><input type="checkbox" name="become" value="1" {become_val}/> Become (-b)</label>
 
-      <div style="margin-top:16px;">
+      <div class="actions">
         <button class="btn" type="submit" onclick="document.getElementById('action').value='run'">Run Playbook</button>
         <a class="btn" href="?action=list_reports" target="_blank">Browse reports</a>
       </div>
@@ -482,18 +482,18 @@ def render_form(msg: str = "", form: cgi.FieldStorage = None):
   </div>
 </body>
 </html>
-""" % {
-        "msg_html": msg_html,
-        "sel": ("selected" if not selected_playbook else ""),
-        "playbook_opts": playbook_opts,
-        "inv_opts": inv_opts,
-        "regions_html": regions_html,
-        "hosts_html": hosts_html,
-        "user_val": user_val,
-        "tags_val": tags_val,
-        "check_val": check_val,
-        "become_val": become_val,
-    }
+""".format(
+        msg_html=msg_html,
+        sel_pb=("selected" if not selected_playbook else ""),
+        playbook_opts=playbook_opts,
+        inv_opts=inv_opts,
+        regions_html=regions_html,
+        hosts_html=hosts_html,
+        user_val=user_val,
+        tags_val=tags_val,
+        check_val=check_val,
+        become_val=become_val,
+    )
     print(html_out)
 
 
@@ -509,31 +509,23 @@ def run_playbook(form: cgi.FieldStorage):
     ssh_pass    = (form.getfirst("password") or "").strip()
     become_pass = (form.getfirst("become_pass") or "").strip()
 
-    # Validate playbook & allowed inventories
+    # Validation
     if playbook_key not in PLAYBOOKS:
-        render_form("Invalid playbook selected.", form)
-        return
-    allowed_inv_keys = _allowed_inventory_keys_for_playbook(playbook_key)
-    if inventory_key not in INVENTORIES or (allowed_inv_keys and inventory_key not in allowed_inv_keys):
-        render_form("Invalid inventory for the selected playbook.", form)
-        return
-
+        render_form("Invalid playbook selected.", form); return
+    if inventory_key not in INVENTORIES or inventory_key not in PLAYBOOKS[playbook_key]["inventories"]:
+        render_form("Invalid inventory for selected playbook.", form); return
     if not hosts:
-        render_form("No hosts selected.", form)
-        return
+        render_form("No hosts selected.", form); return
     for h in hosts:
         if not HOST_RE.match(h):
-            render_form("Invalid hostname: %s" % h, form)
-            return
+            render_form("Invalid hostname: {}".format(h), form); return
     if not USER_RE.match(user):
-        render_form("Invalid SSH user.", form)
-        return
+        render_form("Invalid SSH user.", form); return
     if tags and not TAGS_RE.match(tags):
-        render_form("Invalid characters in tags.", form)
-        return
+        render_form("Invalid characters in tags.", form); return
 
-    playbook_path  = PLAYBOOKS[playbook_key]
-    inventory_path = INVENTORIES[inventory_key]
+    playbook_path  = PLAYBOOKS[playbook_key]["path"]
+    inventory_path = INVENTORIES[inventory_key]["path"]
 
     # Ensure base dirs exist
     Path(RUN_HOME).mkdir(parents=True, exist_ok=True)
@@ -549,14 +541,14 @@ def run_playbook(form: cgi.FieldStorage):
     if tags:
         cmd += ["--tags", tags]
     if ssh_pass:
-        cmd += ["-e", "ansible_password=%s" % ssh_pass]
+        cmd += ["-e", "ansible_password={}".format(ssh_pass)]
     if become_pass:
-        cmd += ["-e", "ansible_become_password=%s" % become_pass]
+        cmd += ["-e", "ansible_become_password={}".format(become_pass)]
 
     if USE_SUDO:
         cmd = [SUDO_BIN, "-n", "--"] + cmd
 
-    # --- OVERRIDE ENV (important)
+    # Environment for ansible
     env = os.environ.copy()
     env["LANG"] = "C.UTF-8"
     env["HOME"] = RUN_HOME
@@ -564,20 +556,7 @@ def run_playbook(form: cgi.FieldStorage):
     env["ANSIBLE_LOCAL_TEMP"] = local_tmp
     env["ANSIBLE_REMOTE_TMP"] = "/tmp"
     env["ANSIBLE_HOST_KEY_CHECKING"] = "False"
-
-    # Prefer PASSWORD when user typed one; disable GSSAPI noise
-    if ssh_pass:
-        env["ANSIBLE_SSH_ARGS"] = (
-            "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-            "-o PreferredAuthentications=password,keyboard-interactive "
-            "-o PubkeyAuthentication=no -o GSSAPIAuthentication=no"
-        )
-    else:
-        env["ANSIBLE_SSH_ARGS"] = (
-            "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-            "-o PreferredAuthentications=publickey,password,keyboard-interactive "
-            "-o GSSAPIAuthentication=no"
-        )
+    env["ANSIBLE_SSH_ARGS"] = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
     TEXT_KW = {"text": True} if sys.version_info >= (3, 7) else {"universal_newlines": True}
 
@@ -595,44 +574,23 @@ def run_playbook(form: cgi.FieldStorage):
         output = proc.stdout
         rc = proc.returncode
     except subprocess.TimeoutExpired as e:
-        output = (e.output or "") + "\nERROR: Execution timed out after %ss.\n" % RUN_TIMEOUT_SECS
+        output = (e.output or "") + "\nERROR: Execution timed out after {}s.\n".format(RUN_TIMEOUT_SECS)
         rc = 124
     except Exception as e:
-        header_ok()
-        print("<pre>%s</pre>" % safe(str(e)))
-        return
+        header_ok(); print("<pre>{}</pre>".format(safe(str(e)))); return
 
-    # Find recent reports (last 2h or since run start)
+    # Recent reports (last 2 hours or since start)
     since_ts = max(start_ts - 5, time.time() - 2 * 3600)
     recent_reports = find_reports(hosts, since_ts)
 
-    # Mask secrets in displayed command (only used if SHOW_COMMAND=True)
-    def _mask_cmd(parts):
-        masked, skip = [], False
-        for i, p in enumerate(parts):
-            if skip:
-                skip = False
-                continue
-            if p == "-e" and i + 1 < len(parts):
-                kv = parts[i+1]
-                if kv.startswith("ansible_password=") or kv.startswith("ansible_become_password="):
-                    masked.extend(["-e", "****"])
-                    skip = True
-                    continue
-            masked.append(p)
-        return masked
-
+    # Render result (mask password in command)
     header_ok()
-    status = "✅ SUCCESS" if rc == 0 else "❌ FAILED (rc=%d)" % rc
-    safe_cmd = " ".join(safe(x) for x in _mask_cmd(cmd))
-    command_html = ""
-    if SHOW_COMMAND:
-        command_html = "<p><strong>Command:</strong> <code>%s</code></p>" % safe_cmd
-
+    status = "✅ SUCCESS" if rc == 0 else "❌ FAILED (rc={})".format(rc)
+    masked_cmd = "ansible-playbook [redacted]"  # do not show full command
     recent_html = render_reports_list(
         "Reports (last 2h, matching selected hosts)",
         recent_reports,
-        "Roots: %s" % ", ".join(REPORT_BASES),
+        "Roots: {}".format(", ".join(REPORT_BASES)),
     )
 
     html_out = """<!DOCTYPE html>
@@ -641,32 +599,43 @@ def run_playbook(form: cgi.FieldStorage):
   <meta charset="utf-8" />
   <title>Run Result — Ansible Playbook CGI Runner</title>
   <style>
-    body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
-    .card { max-width: 1000px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }
-    pre { background: #0b1020; color: #d1e7ff; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; }
-    .btn { background: #0d6efd; color: #fff; padding: 8px 14px; border: 0; border-radius: 8px; text-decoration: none; }
-    .muted { color:#666; }
+    body {{ font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
+    .card {{ max-width: 1000px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }}
+    pre {{ background: #0b1020; color: #d1e7ff; padding: 12px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; }}
+    .btn, .btn:link, .btn:visited {{
+      display:inline-flex; align-items:center; justify-content:center;
+      height:48px; padding:0 22px; font-weight:700; font-size:20px; line-height:1;
+      color:#fff; background:#0d6efd; border:0; border-radius:16px; text-decoration:none; cursor:pointer;
+      box-shadow:0 1px 2px rgba(0,0,0,.06), 0 4px 14px rgba(13,110,253,.25);
+      transition:background .15s ease, transform .02s ease; -webkit-appearance:none; appearance:none;
+    }}
+    button.btn {{ border:0; }}
+    .btn:hover {{ background:#0b5ed7; }} .btn:active {{ transform:translateY(1px); }}
+    .actions {{ display:flex; gap:16px; margin-top:16px; align-items:center; }}
+    .muted {{ color:#666; }}
   </style>
 </head>
 <body>
   <div class="card">
-    <h1>%(status)s</h1>
-    %(command_html)s
+    <h1>{status}</h1>
+    <p><strong>Command:</strong> <code>{cmd}</code></p>
     <h3>Output</h3>
-    <pre>%(out)s</pre>
+    <pre>{out}</pre>
 
-    %(recent)s
-    <p><a class="btn" href="?action=list_reports" target="_blank">Browse all reports</a></p>
-    <p><a class="btn" href="">Run another</a></p>
+    {recent}
+    <div class="actions">
+      <a class="btn" href="?action=list_reports" target="_blank">Browse reports</a>
+      <a class="btn" href="">Run another</a>
+    </div>
   </div>
 </body>
 </html>
-""" % {
-        "status": status,
-        "command_html": command_html,
-        "out": safe(output),
-        "recent": recent_html,
-    }
+""".format(
+        status=safe(status),
+        cmd=safe(masked_cmd),
+        out=safe(output),
+        recent=recent_html,
+    )
 
     print(html_out)
 
@@ -688,8 +657,7 @@ def main():
     except Exception:
         header_ok()
         import traceback
-        print("<pre>%s</pre>" % safe(traceback.format_exc()))
-
+        print("<pre>{}</pre>".format(safe(traceback.format_exc())))
 
 if __name__ == "__main__":
     main()
