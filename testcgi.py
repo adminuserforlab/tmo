@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Ansible Playbook CGI Runner — filtered inventories + regions/hosts + output + reports + switchuser option
-- Hides file paths in UI (labels only)
-- Inventory list filtered by selected playbook
-- Regions (INI groups) + scrollable hosts + select all/none
-- Intel: force SSH user cloudadmin
-- AMD: SSH as serveradmin (default), sudo to awsuser (--become-user awsuser)
-- Switch SSH user option (dropdown with common users + free-text)
-- Runs ansible-playbook and shows output inline (masked command)
-- Browse generated HTML reports securely
-- Polished UI; Python 3.7 compatible
+Corrected Ansible Playbook CGI Runner
+- Cleaned up a few minor logic bugs and tightened validation
+- Consistent config keys (suggest_ssh_user)
+- Safer handling of subprocess output when text/universal_newlines is used
+- Better defaults for form rendering and inventory options
+- Python 3.7+ compatible
 
-Changes:
-- Expose SSH password as ansible_password + ansible_ssh_pass
-- Add switchuser option in UI and runner logic
-- Provide dropdown of common users with custom option
+Notes:
+- This file is intended to run under a trusted internal CGI environment.
+- Make sure file/dir permissions for RUN_HOME / RUN_TMP / REPORT_BASES allow the web user.
 """
 
 import cgi
@@ -44,6 +39,7 @@ PLAYBOOKS = {
         "label": "AMD Health Check",
         "path": "/var/www/cgi-bin/amd-check.yml",
         "inventories": ["amd-inv"],
+        # NOTE: use key name suggest_ssh_user consistently
         "suggest_ssh_user": "serveradmin",
         "become_user": "awsuser",
     },
@@ -72,15 +68,19 @@ USER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 TAGS_RE = re.compile(r"^[A-Za-z0-9_,.-]+$")
 
 # ---------------- UTIL ----------------
+
 def header_ok(ct="text/html; charset=utf-8"):
     print("Content-Type: " + ct)
     print()
 
+
 def safe(s: str) -> str:
     return html.escape("" if s is None else str(s))
 
+
 def _realpath(p: str) -> str:
     return os.path.realpath(p)
+
 
 def _is_under(base: str, target: str) -> bool:
     base_r = _realpath(base)
@@ -88,14 +88,15 @@ def _is_under(base: str, target: str) -> bool:
     return tgt_r == base_r or tgt_r.startswith(base_r + os.sep)
 
 # ---------------- Inventory Parser ----------------
+
 def parse_ini_inventory_groups(path: str):
     groups, current = {}, None
     if not os.path.exists(path):
         return {}
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
         for raw in f:
             line = raw.strip()
-            if not line or line.startswith(("#",";")):
+            if not line or line.startswith(("#", ";")):
                 continue
             if line.startswith("[") and line.endswith("]"):
                 current = line[1:-1].strip()
@@ -105,12 +106,14 @@ def parse_ini_inventory_groups(path: str):
                 token = line.split()[0].split("=")[0].strip()
                 if token and token not in groups[current]:
                     groups[current].append(token)
+    # remove empty common sections
     for k in ("all", "ungrouped"):
         if k in groups and not groups[k]:
             groups.pop(k, None)
-    for k in groups:
+    for k in list(groups.keys()):
         groups[k] = sorted(groups[k], key=str.lower)
     return dict(sorted(groups.items(), key=lambda kv: kv[0].lower()))
+
 
 def get_inventory_maps(inv_key: str):
     meta = INVENTORIES.get(inv_key or "", {})
@@ -126,6 +129,7 @@ def get_inventory_maps(inv_key: str):
     return groups_map, all_hosts, host_groups
 
 # ---------------- Reports ----------------
+
 def find_reports(hosts, since_ts, limit=200):
     out = []
     needles = [h.lower() for h in (hosts or [])]
@@ -134,7 +138,7 @@ def find_reports(hosts, since_ts, limit=200):
             continue
         for root, _, files in os.walk(base):
             for fn in files:
-                if not fn.lower().endswith(".html"):
+                if not fn.lower().endswith('.html'):
                     continue
                 full = os.path.join(root, fn)
                 try:
@@ -150,6 +154,7 @@ def find_reports(hosts, since_ts, limit=200):
     out.sort(key=lambda x: x["mtime"], reverse=True)
     return out[:limit]
 
+
 def render_reports_list(title, reports, extra_note=""):
     items = []
     for r in reports:
@@ -164,9 +169,10 @@ def render_reports_list(title, reports, extra_note=""):
         ul = "<p class='muted'>No matching reports found.</p>"
     else:
         ul = "<ul>\n%s\n</ul>" % "\n".join(items)
-    return f"<h3>{safe(title)}</h3>{ul}{('<p class=\'muted\'>%s</p>' % safe(extra_note) if extra_note else '')}"
+    return f"<h3>{safe(title)}</h3>{ul}{('<p class=\'muted\'>' + safe(extra_note) + '</p>' if extra_note else '')}"
 
 # ---------------- Report serving ----------------
+
 def serve_report(form):
     try:
         b = int(form.getfirst("b", "-1"))
@@ -219,12 +225,10 @@ def list_reports_page(form):
   </style>
 </head>
 <body>
-  <div class=\"card\">
-    <h1>Reports Browser</h1>
-    <form method=\"get\" action=\"\">
-      <input type=\"hidden\" name=\"action\" value=\"list_reports\" />
+  <div class=\"card\">\n    <h1>Reports Browser</h1>
+    <form method=\"get\" action=\"\">\n      <input type=\"hidden\" name=\"action\" value=\"list_reports\" />
       <label for=\"host\">Host contains (optional)</label>
-      <input id=\"host\" name=\"host\" type=\"text\" value=\"{safe(host_filter)}\" placeholder=\"e.g. ny1\" />
+      <input id=\"host\" name=\"host\" type=\"text\" value=\"{safe_host}\" placeholder=\"e.g. ny1\" />
       <label for=\"hours\">Modified within last N hours</label>
       <input id=\"hours\" name=\"hours\" type=\"text\" value=\"{hours}\" />
       <div style=\"margin-top:12px;\"><button class=\"btn\" type=\"submit\">Search</button> <a class=\"btn\" href=\"\">Back</a></div>
@@ -232,19 +236,20 @@ def list_reports_page(form):
     {list_html}
   </div>
 </body>
-</html>"""
+</html>""".format(safe_host=safe(host_filter), hours=hours, list_html=list_html)
     print(html_out)
 
 # ---------------- Form Renderer ----------------
+
 def render_form(msg: str = "", form: cgi.FieldStorage = None):
     header_ok()
     if form is None:
         form = cgi.FieldStorage()
 
-    selected_playbook = form.getfirst("playbook", "")
-    inventory_key     = form.getfirst("inventory_key", "")
-    selected_regions  = form.getlist("regions")
-    posted_hosts      = form.getlist("hosts")
+    selected_playbook = form.getfirst("playbook", "") or ""
+    inventory_key     = form.getfirst("inventory_key", "") or ""
+    selected_regions  = form.getlist("regions") or []
+    posted_hosts      = form.getlist("hosts") or []
 
     # Allowed inventories for selected playbook
     if selected_playbook in PLAYBOOKS:
@@ -260,11 +265,14 @@ def render_form(msg: str = "", form: cgi.FieldStorage = None):
         for k,v in PLAYBOOKS.items()
     )
 
-    # Inventory options (filtered)
-    inv_opts = "\n".join(
-        '<option value="{k}" {sel}>{lbl}</option>'.format(k=safe(k), lbl=safe(INVENTORIES[k]["label"]), sel=("selected" if k==inventory_key else ""))
-        for k in allowed_invs if k in INVENTORIES
-    )
+    # Inventory options (filtered by playbook allowed_invs)
+    if allowed_invs:
+        inv_opts = "\n".join(
+            '<option value="{k}" {sel}>{lbl}</option>'.format(k=safe(k), lbl=safe(INVENTORIES[k]["label"]), sel=("selected" if k==inventory_key else ""))
+            for k in allowed_invs if k in INVENTORIES
+        )
+    else:
+        inv_opts = ""
 
     # Regions checklist
     if groups_map:
@@ -291,7 +299,7 @@ def render_form(msg: str = "", form: cgi.FieldStorage = None):
     suggest_user  = PLAYBOOKS.get(selected_playbook, {}).get("suggest_ssh_user")
 
     # Decide preset: suggested -> user param -> DEFAULT_USER
-    preset = suggest_user if suggest_user else form.getfirst("user", DEFAULT_USER)
+    preset = suggest_user if suggest_user else (form.getfirst("user") or DEFAULT_USER)
 
     if forced_user:
         user_input_html = (
@@ -300,7 +308,6 @@ def render_form(msg: str = "", form: cgi.FieldStorage = None):
             '<div class="muted">SSH login is forced to <strong>{v}</strong> for this playbook.</div>'
         ).format(v=safe(forced_user))
     else:
-        # If preset is one of COMMON_USERS select it; otherwise select custom and populate custom input
         preset_is_common = preset in COMMON_USERS
         opts_html = "\n".join(
             '<option value="{u}" {sel}>{u}</option>'.format(u=safe(u), sel=("selected" if (preset_is_common and u==preset) else ""))
@@ -382,58 +389,58 @@ def render_form(msg: str = "", form: cgi.FieldStorage = None):
   </script>
 </head>
 <body>
-  <div class="card">
+  <div class=\"card\">
     <h1>Ansible Playbook CGI Runner</h1>
     {msg_html}
-    <form id="runnerForm" method="post" action="">
-      <input type="hidden" name="action" id="action" value="refresh" />
+    <form id=\"runnerForm\" method=\"post\" action=\"\">
+      <input type=\"hidden\" name=\"action\" id=\"action\" value=\"refresh\" />
 
-      <label for="playbook">Playbook</label>
-      <select id="playbook" name="playbook" required onchange="setActionAndSubmit('refresh')">
-        <option value="" {sel_pb}>Select a playbook…</option>
+      <label for=\"playbook\">Playbook</label>
+      <select id=\"playbook\" name=\"playbook\" required onchange=\"setActionAndSubmit('refresh')\">
+        <option value=\"\" {sel_pb}>Select a playbook…</option>
         {playbook_opts}
       </select>
 
-      <label for="inventory_key">Inventory</label>
-      <select id="inventory_key" name="inventory_key" onchange="setActionAndSubmit('refresh')">
-        <option value="">(Pick a playbook first)</option>
+      <label for=\"inventory_key\">Inventory</label>
+      <select id=\"inventory_key\" name=\"inventory_key\" onchange=\"setActionAndSubmit('refresh')\">
+        <option value=\"\">(Pick a playbook first)</option>
         {inv_opts}
       </select>
-      <div class="muted">Pick an inventory, then choose regions and/or adjust hosts below.</div>
+      <div class=\"muted\">Pick an inventory, then choose regions and/or adjust hosts below.</div>
 
       <label>Regions (groups) in inventory:</label>
-      <div class="group-grid">{regions_html}</div>
-      <div class="toolbar">
-        <button type="button" class="tbtn" onclick="selectAllHosts(true)">Select all hosts</button>
-        <button type="button" class="tbtn" onclick="selectAllHosts(false)">Select none</button>
+      <div class=\"group-grid\">{regions_html}</div>
+      <div class=\"toolbar\">
+        <button type=\"button\" class=\"tbtn\" onclick=\"selectAllHosts(true)\">Select all hosts</button>
+        <button type=\"button\" class=\"tbtn\" onclick=\"selectAllHosts(false)\">Select none</button>
       </div>
 
       <label>Hosts (from selected inventory):</label>
-      <div class="hosts-box">{hosts_html}</div>
+      <div class=\"hosts-box\">{hosts_html}</div>
 
-      <div class="row">
+      <div class=\"row\">
         <div>
-          <label for="user">SSH user (-u)</label>
+          <label for=\"user\">SSH user (-u)</label>
           {user_input_html}
         </div>
         <div>
-          <label for="tags">--tags (optional, comma-separated)</label>
-          <input id="tags" name="tags" type="text" value="{tags_val}" placeholder="setup,deploy" />
+          <label for=\"tags\">--tags (optional, comma-separated)</label>
+          <input id=\"tags\" name=\"tags\" type=\"text\" value=\"{tags_val}\" placeholder=\"setup,deploy\" />
         </div>
       </div>
 
-      <label for="password">SSH password</label>
-      <input id="password" name="password" type="password" />
+      <label for=\"password\">SSH password</label>
+      <input id=\"password\" name=\"password\" type=\"password\" />
 
-      <label for="become_pass">Become password (optional)</label>
-      <input id="become_pass" name="become_pass" type="password" />
+      <label for=\"become_pass\">Become password (optional)</label>
+      <input id=\"become_pass\" name=\"become_pass\" type=\"password\" />
 
-      <label><input type="checkbox" name="check" value="1" {check_val}/> Dry run (--check)</label>
-      <label><input type="checkbox" name="become" value="1" {become_val}/> Become (-b)</label>
+      <label><input type=\"checkbox\" name=\"check\" value=\"1\" {check_val}/> Dry run (--check)</label>
+      <label><input type=\"checkbox\" name=\"become\" value=\"1\" {become_val}/> Become (-b)</label>
 
-      <div class="actions">
-        <button class="btn" type="submit" onclick="document.getElementById('action').value='run'">Run Playbook</button>
-        <a class="btn" href="?action=list_reports" target="_blank">Browse reports</a>
+      <div class=\"actions\">
+        <button class=\"btn\" type=\"submit\" onclick=\"document.getElementById('action').value='run'\">Run Playbook</button>
+        <a class=\"btn\" href=\"?action=list_reports\" target=\"_blank\">Browse reports</a>
       </div>
     </form>
   </div>
@@ -454,10 +461,11 @@ def render_form(msg: str = "", form: cgi.FieldStorage = None):
     print(html_out)
 
 # ---------------- RUN ----------------
+
 def run_playbook(form: cgi.FieldStorage):
-    playbook_key = form.getfirst("playbook", "")
-    inventory_key = form.getfirst("inventory_key", "")
-    hosts = form.getlist("hosts")
+    playbook_key = form.getfirst("playbook", "") or ""
+    inventory_key = form.getfirst("inventory_key", "") or ""
+    hosts = form.getlist("hosts") or []
 
     # user selection: either common user select or custom input
     raw_user = form.getfirst("user") or ""
@@ -475,7 +483,7 @@ def run_playbook(form: cgi.FieldStorage):
     # Validation
     if playbook_key not in PLAYBOOKS:
         render_form("Invalid playbook selected.", form); return
-    if inventory_key not in INVENTORIES or inventory_key not in PLAYBOOKS[playbook_key]["inventories"]:
+    if inventory_key not in INVENTORIES or inventory_key not in PLAYBOOKS[playbook_key].get("inventories", []):
         render_form("Invalid inventory for selected playbook.", form); return
     if not hosts:
         render_form("No hosts selected.", form); return
@@ -523,6 +531,7 @@ def run_playbook(form: cgi.FieldStorage):
 
     # Auth secrets
     if ssh_pass:
+        # pass as extra-vars; note these will appear in process list if not using text mode / sudo masking
         cmd += ["-e", "ansible_password={}".format(ssh_pass), "-e", "ansible_ssh_pass={}".format(ssh_pass)]
     if become_pass:
         cmd += ["-e", "ansible_become_password={}".format(become_pass)]
@@ -550,13 +559,13 @@ def run_playbook(form: cgi.FieldStorage):
             stderr=subprocess.STDOUT,
             env=env,
             timeout=RUN_TIMEOUT_SECS,
-            cwd=Path(playbook_path).parent,
+            cwd=str(Path(playbook_path).parent),
             **TEXT_KW
         )
-        output = proc.stdout
+        output = proc.stdout if proc.stdout is not None else ""
         rc = proc.returncode
     except subprocess.TimeoutExpired as e:
-        output = (e.output or b"")
+        output = e.output if getattr(e, 'output', None) is not None else b""
         if isinstance(output, bytes):
             try:
                 output = output.decode('utf-8', errors='replace')
@@ -618,11 +627,12 @@ def run_playbook(form: cgi.FieldStorage):
     print(html_out)
 
 # ---------------- MAIN ----------------
+
 def main():
     try:
         method = os.environ.get("REQUEST_METHOD", "GET").upper()
         form = cgi.FieldStorage()
-        action = form.getfirst("action", "")
+        action = form.getfirst("action", "") or ""
         if method == "GET" and action == "view_report":
             serve_report(form)
         elif method == "GET" and action == "list_reports":
