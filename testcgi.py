@@ -361,12 +361,53 @@ def run_playbook(form: cgi.FieldStorage):
         "Roots: {}".format(", ".join(REPORT_BASES)),
     )
 
-    html_out = f"""<!DOCTYPE html>
+   html_out = f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8" />
   <title>Run Result — Ansible Playbook CGI Runner</title>
   <style>
-    body {{ font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
-    .card {{ max-width: 1000px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }}
-    pre {{ background: #0b
+    body {{
+      font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif;
+      margin: 24px;
+    }}
+    .card {{
+      max-width: 1000px;
+      margin: auto;
+      padding: 20px;
+      border: 1px solid #ddd;
+      border-radius: 12px;
+      box-shadow: 0 2px 6px rgba(0,0,0,.05);
+    }}
+    pre {{
+      background: #0b0b0b;
+      color: #f8f8f2;
+      padding: 12px;
+      border-radius: 8px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }}
+    h2 {{
+      margin-top: 0;
+    }}
+    .status {{
+      font-size: 1.2em;
+      margin-bottom: 12px;
+      font-weight: bold;
+    }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Playbook Run Result</h1>
+    <div class="status">{safe(status)}</div>
+    <h2>Command</h2>
+    <pre>{safe(masked_cmd)}</pre>
+    <h2>Output</h2>
+    <pre>{safe(output)}</pre>
+    {recent_html}
+  </div>
+</body>
+</html>
+"""
+    print(html_out)
