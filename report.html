@@ -70,11 +70,11 @@
         }
         /* Uniform column widths */
         td:first-child, th:first-child {
-            width: 20%; /* Fixed width for the label column */
+            width: 20%;
             vertical-align: top;
         }
         td:last-child, th:last-child {
-            width: 80%; /* Fixed width for the value column */
+            width: 80%;
         }
     </style>
 </head>
@@ -82,26 +82,82 @@
     <h1>System Healthcheck Report - {{ ansible_hostname }}</h1>
     <p><strong>Generated on:</strong> {{ ansible_date_time.iso8601 }}</p>
     <p><strong>Hostname:</strong> {{ ansible_hostname }}</p>
-
-    <!-- Overall Status -->
-    {% set services_ok = failed_services is defined and (failed_services.stdout | length == 0) %}
-    {% set pods_ok = non_running_pods is defined and (non_running_pods.stdout | length == 0) %}
-
-    {% if services_ok and pods_ok %}
-        {% set overall_status = 'All Services & Pods OK' %}
-        {% set status_class = 'status-positive' %}
-    {% elif not services_ok or not pods_ok %}
-        {% set overall_status = 'Some Services or Pods have Issues' %}
-        {% set status_class = 'status-negative' %}
-    {% else %}
-        {% set overall_status = 'Status Unknown' %}
-        {% set status_class = 'status-warning' %}
-    {% endif %}
-
-    <p><strong>Overall Status:</strong> <span class="{{ status_class }}">{{ overall_status }}</span></p>
-
     <p><strong>IP Address:</strong> {{ ansible_all_ipv4_addresses | default('N/A') }}</p>
 
+    <!-- Task Status Summary -->
+    <h2>Healthcheck Status Summary</h2>
+    <table>
+        <tbody>
+            <tr>
+                <td><strong>Disk Usage</strong></td>
+                <td>
+                    {% if disk_used is defined and disk_used.stdout %}
+                        <span class="{% if disk_used.stdout | int >= disk_threshold %}status-negative{% else %}status-positive{% endif %}">
+                            {% if disk_used.stdout | int >= disk_threshold %}Not OK{% else %}OK{% endif %}
+                        </span>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Free Memory</strong></td>
+                <td>
+                    {% if mem_free_mb is defined %}
+                        <span class="{% if mem_free_mb | int <= mem_threshold %}status-negative{% else %}status-positive{% endif %}">
+                            {% if mem_free_mb | int <= mem_threshold %}Not OK{% else %}OK{% endif %}
+                        </span>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Load Average</strong></td>
+                <td>
+                    {% if ansible_loadavg is defined and ansible_loadavg['1m'] is defined %}
+                        <span class="{% if ansible_loadavg['1m'] | float >= load_threshold %}status-negative{% else %}status-positive{% endif %}">
+                            {% if ansible_loadavg['1m'] | float >= load_threshold %}Not OK{% else %}OK{% endif %}
+                        </span>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Services</strong></td>
+                <td>
+                    {% if failed_services is defined and failed_services.stdout %}
+                        <span class="status-negative">Not OK</span>
+                    {% else %}
+                        <span class="status-positive">OK</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Pods</strong></td>
+                <td>
+                    {% if non_running_pods is defined and non_running_pods.stdout %}
+                        <span class="status-negative">Not OK</span>
+                    {% else %}
+                        <span class="status-positive">OK</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Nodes</strong></td>
+                <td>
+                    {% if top_nodes_cpu is defined and top_nodes_cpu.stdout %}
+                        <span class="status-positive">OK</span>
+                    {% else %}
+                        <span class="status-negative">Not OK</span>
+                    {% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- System Metrics Section -->
     <h2>System Metrics</h2>
     <table>
         <tbody>
