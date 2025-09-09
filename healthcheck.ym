@@ -33,7 +33,6 @@
     - name: Gather package facts
       package_facts:
         manager: auto
-      become: true
       changed_when: false
 
     - name: Gather information from hosts
@@ -49,7 +48,6 @@
             dmidecode -t bios | grep -E 'Vendor|Version|Release Date' 2>/dev/null || echo "N/A"
           args:
             executable: /bin/bash
-          become: true
           register: firmware_info
           changed_when: false
 
@@ -118,7 +116,7 @@
 
         - name: Set zero ready pods fact
           set_fact:
-            zero_ready_pods_fact: "{{ zero_ready_pods.stdout | default('') }}"
+            zero_ready_pods_fact: "{{ zero_ready_pods.stdout }}"
 
         - name: Get events with Warnings
           shell: "kubectl get events --all-namespaces | grep Warning"
@@ -132,27 +130,21 @@
 
         - name: Set top pods CPU fact
           set_fact:
-            top_pods_cpu_fact: "{{ top_pods_cpu.stdout | default('') }}"
+            top_pods_cpu_fact: "{{ top_pods_cpu.stdout }}"
 
         - name: Get top nodes by CPU
           shell: "kubectl top nodes --sort-by=cpu | head -10"
           register: top_nodes_cpu
           ignore_errors: true
 
-        - name: Get not ready nodes
-          shell: kubectl get nodes --no-headers | grep -v ' Ready ' | awk '{print $1}' || true
-          register: node_not_ready
+        - name: Get NotReady nodes
+          shell: "kubectl get nodes --no-headers | awk '$2 != \"Ready\" {print $1}'"
+          register: node_not_ready_raw
           ignore_errors: true
 
-        - name: Set node not ready fact
+        - name: Save node_not_ready_fact
           set_fact:
-            node_not_ready_fact: "{{ node_not_ready.stdout_lines | default([]) }}"
-
-        - name: Set issue flags for template
-          set_fact:
-            services_issues: "{{ (failed_services.stdout | default('') | trim) != '' }}"
-            pods_issues: "{{ (non_running_pods.stdout | default('') | trim) != '' or (zero_ready_pods.stdout | default('') | trim) != '' }}"
-            nodes_issues: "{{ (node_not_ready_fact | default([])) | length > 0 }}"
+            node_not_ready_fact: "{{ node_not_ready_raw.stdout_lines | default([]) }}"
 
       rescue:
         - name: Handle errors
@@ -165,6 +157,20 @@
         state: started
         enabled: yes
 
+    - name: Define issue facts for report
+      set_fact:
+        services_issues: "{{ (failed_services.stdout | default('') | trim) != '' }}"
+        pods_issues: >-
+          {{
+            (non_running_pods.stdout | default('') | trim) != '' or
+            (zero_ready_pods_fact | default('') | trim) != ''
+          }}
+        nodes_issues: >-
+          {{
+            (node_not_ready_fact is defined) and
+            (node_not_ready_fact | length > 0)
+          }}
+
     - name: Generate report
       template:
         src: templates/report.html.j2
@@ -173,32 +179,3 @@
       delegate_to: localhost
       become: false
       register: report_files
-
-    - name: Create zip archive of all reports
-      archive:
-        path: "{{ report_base_path }}/report_*.html"
-        dest: "{{ report_base_path }}/healthcheck_reports_{{ report_timestamp }}.zip"
-        format: zip
-      delegate_to: localhost
-      become: false
-      run_once: true
-
-    - name: Send zip file via mailx
-      shell: |
-        echo "Health report for all hosts generated at {{ report_timestamp }}" | mailx -s "Healthcheck Report - {{ report_timestamp }}" -a "{{ report_base_path }}/healthcheck_reports_{{ report_timestamp }}.zip" "{{ email_to }}"
-      args:
-        executable: /bin/bash
-      delegate_to: localhost
-      become: false
-      environment:
-        MAILRC: "/etc/mail.rc"
-      when: report_files is changed
-
-    - name: Clean up zip files
-      file:
-        path: "{{ report_base_path }}/healthcheck_reports_{{ report_timestamp }}.zip"
-        state: absent
-      delegate_to: localhost
-      become: false
-      run_once: true
-      when: report_files is changed
