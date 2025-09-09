@@ -1,0 +1,204 @@
+---
+- name: Health Check HTML Report
+  hosts: all
+  become: true
+  gather_facts: yes
+  vars:
+    disk_threshold: 80
+    mem_threshold: 170000
+    load_threshold: 2.0
+    email_to: "admin@example.com"
+    report_base_path: "/tmp/healthcheck_reports/"
+
+  tasks:
+    - name: Find old reports
+      find:
+        paths: "{{ report_base_path }}"
+        patterns: "report_{{ item }}_*.html"
+      with_items: "{{ ansible_play_hosts }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: find_result
+
+    - name: Remove old reports
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ find_result.results | flatten | selectattr('files', 'defined') | map(attribute='files') | list | flatten }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Gather package facts
+      package_facts:
+        manager: auto
+      become: true
+      changed_when: false
+
+    - name: Gather information from hosts
+      block:
+        - name: Set report timestamp
+          set_fact:
+            report_timestamp: "{{ '%Y_%m_%d_%H_%M_%S' | strftime(ansible_date_time.epoch) }}"
+          delegate_to: localhost
+          run_once: true
+
+        - name: Gather firmware information
+          shell: |
+            dmidecode -t bios | grep -E 'Vendor|Version|Release Date' 2>/dev/null || echo "N/A"
+          args:
+            executable: /bin/bash
+          become: true
+          register: firmware_info
+          changed_when: false
+
+        - name: Set firmware facts
+          set_fact:
+            firmware_details: "{{ firmware_info.stdout_lines | default(['N/A']) }}"
+
+        - name: Collect disk usage
+          shell: df -h / | awk 'NR==2{print $5}' | tr -d '%'
+          register: disk_used
+          changed_when: false
+
+        - name: Set Memory fact
+          set_fact:
+            mem_free_mb: "{{ ansible_memory_mb.real.free }}"
+
+        - name: Get Timezone info
+          shell: timedatectl
+          register: timezone_info
+          changed_when: false
+
+        - name: Get list of running services
+          shell: "systemctl list-units --type=service --state=running | grep -v -E 'LOAD|ACTIVE|SUB|loaded units listed'"
+          register: running_services
+          changed_when: false
+
+        - name: Get list of failed services
+          shell: "systemctl list-units --type=service --state=failed | grep -v -E 'LOAD|ACTIVE|SUB|loaded units listed' || true"
+          register: failed_services
+          changed_when: false
+
+        - name: Get journalctl error logs
+          shell: "journalctl -p 3 -xb -n 20"
+          register: error_logs
+          changed_when: false
+
+        - name: Get list of logrotate configured services
+          shell: |
+            for file in /etc/logrotate.d/*; do
+              if [ -f "$file" ]; then
+                basename "$file"
+              fi
+            done
+          register: logrotate_services
+          changed_when: false
+          ignore_errors: true
+
+        - name: Set logrotate services fact
+          set_fact:
+            logrotate_services_fact: "{{ logrotate_services.stdout_lines | default([]) }}"
+
+        - name: Get all pods in all namespaces
+          shell: "kubectl get pods -A"
+          register: all_pods
+          ignore_errors: true
+
+        - name: Get non-running pods
+          shell: "kubectl get pods -A | grep -v Running"
+          register: non_running_pods
+          ignore_errors: true
+
+        - name: Get pods with 0/ readiness
+          shell: "kubectl get pods -A | grep '0/' | true"
+          register: zero_ready_pods
+          ignore_errors: true
+
+        - name: Set zero ready pods fact
+          set_fact:
+            zero_ready_pods_fact: "{{ zero_ready_pods.stdout | default('') }}"
+
+        - name: Get events with Warnings
+          shell: "kubectl get events --all-namespaces | grep Warning"
+          register: warnings
+          ignore_errors: true
+
+        - name: Get top pods by CPU
+          shell: "kubectl top pods -A --sort-by=cpu | head -10"
+          register: top_pods_cpu
+          ignore_errors: true
+
+        - name: Set top pods CPU fact
+          set_fact:
+            top_pods_cpu_fact: "{{ top_pods_cpu.stdout | default('') }}"
+
+        - name: Get top nodes by CPU
+          shell: "kubectl top nodes --sort-by=cpu | head -10"
+          register: top_nodes_cpu
+          ignore_errors: true
+
+        - name: Get not ready nodes
+          shell: kubectl get nodes --no-headers | grep -v ' Ready ' | awk '{print $1}' || true
+          register: node_not_ready
+          ignore_errors: true
+
+        - name: Set node not ready fact
+          set_fact:
+            node_not_ready_fact: "{{ node_not_ready.stdout_lines | default([]) }}"
+
+        - name: Set issue flags for template
+          set_fact:
+            services_issues: "{{ (failed_services.stdout | default('') | trim) != '' }}"
+            pods_issues: "{{ (non_running_pods.stdout | default('') | trim) != '' or (zero_ready_pods.stdout | default('') | trim) != '' }}"
+            nodes_issues: "{{ (node_not_ready_fact | default([])) | length > 0 }}"
+
+      rescue:
+        - name: Handle errors
+          debug:
+            msg: "An error occurred on {{ inventory_hostname }}"
+
+    - name: Ensure logrotate service is enabled and running (RedHat)
+      systemd:
+        name: logrotate.timer
+        state: started
+        enabled: yes
+
+    - name: Generate report
+      template:
+        src: templates/report.html.j2
+        dest: "{{ report_base_path }}/report_{{ inventory_hostname }}_{{ report_timestamp }}.html"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      register: report_files
+
+    - name: Create zip archive of all reports
+      archive:
+        path: "{{ report_base_path }}/report_*.html"
+        dest: "{{ report_base_path }}/healthcheck_reports_{{ report_timestamp }}.zip"
+        format: zip
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Send zip file via mailx
+      shell: |
+        echo "Health report for all hosts generated at {{ report_timestamp }}" | mailx -s "Healthcheck Report - {{ report_timestamp }}" -a "{{ report_base_path }}/healthcheck_reports_{{ report_timestamp }}.zip" "{{ email_to }}"
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      environment:
+        MAILRC: "/etc/mail.rc"
+      when: report_files is changed
+
+    - name: Clean up zip files
+      file:
+        path: "{{ report_base_path }}/healthcheck_reports_{{ report_timestamp }}.zip"
+        state: absent
+      delegate_to: localhost
+      become: false
+      run_once: true
+      when: report_files is changed
