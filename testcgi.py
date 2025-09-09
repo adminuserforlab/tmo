@@ -5,382 +5,231 @@
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>System Healthcheck Report - {{ inventory_hostname }}</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.5; color: #222; }
-        .header { display: flex; gap: 20px; align-items: center; justify-content: space-between; }
-        h1 { margin: 0 0 6px 0; font-size: 20px; color: #333; border-bottom: 2px solid #333; padding-bottom: 8px; }
-        .meta { font-size: 13px; color: #444; }
-        .badges { display:flex; gap:12px; align-items:center; margin-top:10px; }
-        .badge { padding: 8px 12px; border-radius: 6px; font-weight:700; display:inline-flex; gap:8px; align-items:center; }
-        .badge .icon { font-size:18px; line-height:1; }
-        .status-positive { background:#e9f7ef; color:#1e7a34; border:1px solid #c6efd3; }
-        .status-warning  { background:#fff8e6; color:#8a6b00; border:1px solid #ffe8a8; }
-        .status-negative { background:#fdecea; color:#b02a37; border:1px solid #f6c6c6; }
-        .status-unknown  { background:#eef3ff; color:#1f4ea6; border:1px solid #d6e3ff; }
+        /* ---- Base ---- */
+        body { 
+            font-family: "Segoe UI", Roboto, Arial, sans-serif; 
+            margin: 0; padding: 20px; 
+            background: #f7f9fc; 
+            color: #222; 
+        }
+        h1, h2 { margin: 0 0 12px 0; }
+        h1 { font-size: 22px; font-weight: 700; color: #1e3a8a; }
+        h2 { font-size: 18px; font-weight: 600; color: #374151; margin-top: 30px; }
+        .meta { font-size: 13px; color: #555; margin-top: 4px; }
 
-        h2 { color:#444; margin-top:28px; background:#f6f6f6; padding:8px; border-left:4px solid #666; }
-        table { width:100%; border-collapse:collapse; margin-top:12px; margin-bottom:28px; }
-        th, td { border:1px solid #ddd; padding:8px; text-align:left; vertical-align:top; }
-        th { background:#fafafa; position:sticky; top:0; font-weight:700; }
-        tr:nth-child(even){ background:#fbfbfb; }
-        .scrollable { max-height:220px; overflow:auto; border:1px solid #eee; padding:8px; background:#fff; }
-        pre { margin:0; font-family:monospace; white-space:pre-wrap; word-wrap:break-word; }
-        .problem-item { margin:4px 0; padding:6px 8px; border-radius:4px; background:#fff; border:1px dashed #eee; }
-        .small { font-size:13px; color:#555; }
-        .col-3 { display:flex; gap:12px; }
+        /* ---- Containers ---- */
+        .card {
+            background: #fff;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            padding: 16px 20px;
+            margin-bottom: 24px;
+        }
+        .section { margin-top: 20px; }
+
+        /* ---- Badges ---- */
+        .badges { display:flex; gap:12px; flex-wrap: wrap; }
+        .badge {
+            padding: 8px 14px;
+            border-radius: 20px;
+            font-weight:600;
+            font-size: 13px;
+            display:flex; align-items:center; gap:8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .badge .icon { font-size: 16px; }
+        .status-positive { background:#dcfce7; color:#166534; }
+        .status-warning  { background:#fef9c3; color:#854d0e; }
+        .status-negative { background:#fee2e2; color:#991b1b; }
+        .status-unknown  { background:#e0e7ff; color:#3730a3; }
+
+        /* ---- Tables ---- */
+        table { width:100%; border-collapse:collapse; margin-top:12px; }
+        th, td { border:1px solid #e5e7eb; padding:8px 10px; text-align:left; font-size:14px; }
+        th { background:#f1f5f9; font-weight:600; color:#374151; }
+        tr:nth-child(even){ background:#f9fafb; }
+        td:first-child { font-weight:600; width: 220px; color:#1f2937; }
+
+        /* ---- Scrollable areas ---- */
+        .scrollable { 
+            max-height:220px; 
+            overflow:auto; 
+            border:1px solid #e5e7eb; 
+            border-radius:6px; 
+            background:#fdfdfd; 
+            padding:8px; 
+        }
+        pre { margin:0; font-family: Consolas, monospace; font-size: 13px; white-space:pre-wrap; }
+
+        /* ---- Problems ---- */
+        .problem-item { 
+            margin:6px 0; 
+            padding:8px 10px; 
+            border-radius:6px; 
+            background:#fff; 
+            border-left:4px solid #f87171; 
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05); 
+        }
+        .muted { color:#6b7280; font-size:13px; }
+        .col-3 { display:flex; gap:16px; margin-top:12px; }
         .col-3 > div { flex:1; }
-        .muted { color:#666; font-size:13px; }
+
+        /* ---- Header ---- */
+        .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; }
+        .overall { font-size:15px; margin-top:8px; }
     </style>
 </head>
 <body>
-    <div class="header">
+    <!-- Header -->
+    <div class="header card">
         <div>
             <h1>System Healthcheck Report - {{ ansible_hostname }}</h1>
             <div class="meta">
-                <span><strong>Generated on:</strong> {{ ansible_date_time.iso8601 }}</span> &nbsp;•&nbsp;
-                <span><strong>Hostname:</strong> {{ ansible_hostname }}</span> &nbsp;•&nbsp;
-                <span><strong>IP:</strong> {{ ansible_all_ipv4_addresses | default('N/A') }}</span>
+                Generated on: {{ ansible_date_time.iso8601 }} &nbsp;•&nbsp; Hostname: {{ ansible_hostname }}
             </div>
+            <div class="overall">
+                {% if (services_issues == false) and (pods_issues == false) and (nodes_issues == false) %}
+                    <span class="badge status-positive"><span class="icon">✅</span> All Services, Pods & Nodes OK</span>
+                {% elif services_issues or pods_issues or nodes_issues %}
+                    <span class="badge status-negative"><span class="icon">❌</span> Issues Detected — see details below</span>
+                {% else %}
+                    <span class="badge status-warning"><span class="icon">⚠️</span> Status Partially Unknown</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
 
-            {# --- compute issue booleans and text safely --- #}
-            {% set failed_out = failed_services.stdout | default('') | trim %}
-            {% set nonrun_out = non_running_pods.stdout | default('') | trim %}
-            {% set zero_ready_out = (zero_ready_pods_fact | join('\n')) if (zero_ready_pods_fact is defined and zero_ready_pods_fact) else '' %}
-            {% set warnings_out = warnings.stdout | default('') | trim %}
-            {% set top_pods_cpu_out = top_pods_cpu_fact | default('') %}
-            {% set top_nodes_cpu_out = top_nodes_cpu.stdout | default('') %}
-            {% set node_not_ready_list = node_not_ready_fact if (node_not_ready_fact is defined) else [] %}
+    <!-- Quick badges -->
+    <div class="card">
+        <div class="badges">
+            {% if services_issues %}
+                <span class="badge status-negative"><span class="icon">❌</span> Services: Issues</span>
+            {% elif services_issues == false %}
+                <span class="badge status-positive"><span class="icon">✅</span> Services: OK</span>
+            {% else %}
+                <span class="badge status-warning"><span class="icon">⚠️</span> Services: Unknown</span>
+            {% endif %}
 
-            {% set services_issues = failed_out != '' %}
-            {% set pods_issues = nonrun_out != '' or zero_ready_out != '' %}
-            {% set warnings_issues = warnings_out != '' %}
+            {% if pods_issues %}
+                <span class="badge status-negative"><span class="icon">❌</span> Pods: Issues</span>
+            {% elif pods_issues == false %}
+                <span class="badge status-positive"><span class="icon">✅</span> Pods: OK</span>
+            {% else %}
+                <span class="badge status-warning"><span class="icon">⚠️</span> Pods: Unknown</span>
+            {% endif %}
+
             {% if node_not_ready_fact is defined %}
-                {% set nodes_issues = (node_not_ready_list | length) > 0 %}
-            {% else %}
-                {% set nodes_issues = None %}
-            {% endif %}
-
-            {# determine overall status #}
-            {% if (services_issues == false) and (pods_issues == false) and (nodes_issues == false) %}
-                {% set overall_text = 'All Services, Pods & Nodes OK' %}
-                {% set overall_class = 'status-positive' %}
-                {% set overall_icon = '✅' %}
-            {% elif services_issues or pods_issues or nodes_issues %}
-                {% set overall_text = 'Issues Detected: See details below' %}
-                {% set overall_class = 'status-negative' %}
-                {% set overall_icon = '❌' %}
-            {% else %}
-                {% set overall_text = 'Status Partially Unknown — some node info missing' %}
-                {% set overall_class = 'status-warning' %}
-                {% set overall_icon = '⚠️' %}
-            {% endif %}
-        </div>
-
-        <div style="text-align:right;">
-            <div class="badges" aria-hidden="true">
-                <span class="badge {{ overall_class }}" title="Overall">
-                    <span class="icon">{{ overall_icon }}</span><span>{{ overall_text }}</span>
-                </span>
-            </div>
-        </div>
-    </div>
-
-    <!-- per-area quick badges -->
-    <div class="badges" style="margin-top:10px;">
-        {# Services badge #}
-        {% if services_issues %}
-            <span class="badge status-negative"><span class="icon">❌</span> Services: Issues</span>
-        {% elif services_issues == false %}
-            <span class="badge status-positive"><span class="icon">✅</span> Services: OK</span>
-        {% else %}
-            <span class="badge status-warning"><span class="icon">⚠️</span> Services: Unknown</span>
-        {% endif %}
-
-        {# Pods badge #}
-        {% if pods_issues %}
-            <span class="badge status-negative"><span class="icon">❌</span> Pods: Issues</span>
-        {% elif pods_issues == false %}
-            <span class="badge status-positive"><span class="icon">✅</span> Pods: OK</span>
-        {% else %}
-            <span class="badge status-warning"><span class="icon">⚠️</span> Pods: Unknown</span>
-        {% endif %}
-
-        {# Nodes badge #}
-        {% if node_not_ready_fact is defined %}
-            {% if nodes_issues %}
-                <span class="badge status-negative"><span class="icon">❌</span> Nodes: NotReady</span>
-            {% else %}
-                <span class="badge status-positive"><span class="icon">✅</span> Nodes: OK</span>
-            {% endif %}
-        {% else %}
-            <span class="badge status-unknown"><span class="icon">❔</span> Nodes: Not Collected</span>
-        {% endif %}
-    </div>
-
-    <!-- Short summary of what's wrong (if anything) -->
-    <h2>Summary of Issues (servers, pods, nodes)</h2>
-    <div class="col-3">
-        <div>
-            <strong>Services</strong>
-            <div class="small muted">Failed services captured from <code>failed_services.stdout</code></div>
-            <div class="scrollable">
-                {% if services_issues %}
-                    <div class="problem-item">
-                        <strong>Failed Services Output:</strong>
-                        <pre>{{ failed_out }}</pre>
-                    </div>
+                {% if nodes_issues %}
+                    <span class="badge status-negative"><span class="icon">❌</span> Nodes: NotReady</span>
                 {% else %}
-                    <div class="muted">No failed services detected.</div>
+                    <span class="badge status-positive"><span class="icon">✅</span> Nodes: OK</span>
                 {% endif %}
-            </div>
-        </div>
-
-        <div>
-            <strong>Pods</strong>
-            <div class="small muted">Non-running / zero-readiness pods</div>
-            <div class="scrollable">
-                {% if nonrun_out %}
-                    <div class="problem-item"><strong>Non-running Pods:</strong><pre>{{ nonrun_out }}</pre></div>
-                {% endif %}
-                {% if zero_ready_out %}
-                    <div class="problem-item"><strong>Pods with 0 Readiness:</strong><pre>{{ zero_ready_out }}</pre></div>
-                {% endif %}
-                {% if (not nonrun_out) and (not zero_ready_out) %}
-                    <div class="muted">No problematic pods detected.</div>
-                {% endif %}
-            </div>
-        </div>
-
-        <div>
-            <strong>Nodes</strong>
-            <div class="small muted">Node readiness / NotReady list (if collected)</div>
-            <div class="scrollable">
-                {% if node_not_ready_fact is defined %}
-                    {% if node_not_ready_list | length > 0 %}
-                        <div class="problem-item"><strong>NotReady Nodes:</strong>
-                            <pre>{% for n in node_not_ready_list %}{{ n }}
-{% endfor %}</pre>
-                        </div>
-                    {% else %}
-                        <div class="muted">All nodes appear Ready.</div>
-                    {% endif %}
-                {% else %}
-                    <div class="muted">Node readiness facts not collected. (Consider setting a task to gather <code>node_not_ready_fact</code> or run <code>kubectl get nodes -o wide</code>.)</div>
-                {% endif %}
-            </div>
+            {% else %}
+                <span class="badge status-unknown"><span class="icon">❔</span> Nodes: Not Collected</span>
+            {% endif %}
         </div>
     </div>
 
-    <!-- Full System Metrics table -->
-    <h2>System Metrics</h2>
-    <table>
-        <tbody>
-            <tr>
-                <td><strong>OS Family</strong></td>
-                <td>{{ ansible_distribution }} - {{ ansible_distribution_version }}</td>
-            </tr>
-            <tr>
-                <td><strong>BIOS Vendor</strong></td>
-                <td>
-                    {% set vendor = firmware_details | select('search', 'Vendor') | list %}
-                    {% if firmware_details is defined and vendor | length > 0 %}
-                        {{ vendor[0] | regex_replace('^.*Vendor:\\s*', '') | trim }}
-                    {% else %}
-                        N/A
-                    {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>BIOS Version / Release</strong></td>
-                <td>
-                    {% set version = firmware_details | select('search', 'Version') | list %}
-                    {% set release_date = firmware_details | select('search', 'Release Date') | list %}
-                    <div class="small">
-                        Version: {% if firmware_details is defined and version | length > 0 %}{{ version[0] | regex_replace('^.*Version:\\s*', '') | trim }}{% else %}N/A{% endif %} <br/>
-                        Release: {% if firmware_details is defined and release_date | length > 0 %}{{ release_date[0] | regex_replace('^.*Release Date:\\s*', '') | trim }}{% else %}N/A{% endif %}
-                    </div>
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Disk Usage (%)</strong></td>
-                <td>
-                    {% if disk_used is defined and disk_used.stdout %}
-                        <span class="{% if disk_used.stdout | int >= disk_threshold %}status-negative{% else %}status-positive{% endif %}">
-                            {{ disk_used.stdout }}%
-                        </span>
-                    {% else %}
-                        N/A
-                    {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Free Memory</strong></td>
-                <td>
-                    {% if mem_free_mb is defined %}
-                        <span class="{% if mem_free_mb | int <= mem_threshold %}status-negative{% else %}status-positive{% endif %}">
-                            {{ mem_free_mb }} MB
-                        </span>
-                    {% else %}
-                        N/A
-                    {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Load Average (1m)</strong></td>
-                <td>
-                    {% if ansible_loadavg is defined and ansible_loadavg['1m'] is defined %}
-                        <span class="{% if ansible_loadavg['1m'] | float >= load_threshold %}status-negative{% else %}status-positive{% endif %}">
-                            {{ ansible_loadavg['1m'] }}
-                        </span>
-                    {% else %}
-                        N/A
-                    {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Timezone</strong></td>
-                <td>
-                    {% if timezone_info is defined and timezone_info.stdout %}<pre>{{ timezone_info.stdout }}</pre>{% else %}N/A{% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Installed Packages</strong></td>
-                <td>
-                    {% if ansible_facts.packages is defined %}
-                        <div class="scrollable">
-                            <pre>{% for package in ansible_facts.packages.keys() | sort %}{{ package }}
-{% endfor %}</pre>
-                        </div>
-                    {% else %}
-                        <div class="muted">Package facts not available.</div>
-                    {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Running Services</strong></td>
-                <td>
-                    {% if running_services is defined and running_services.stdout %}
-                        <div class="scrollable"><pre>{{ running_services.stdout }}</pre></div>
-                    {% else %}
-                        N/A
-                    {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Failed Services (details)</strong></td>
-                <td>
+    <!-- Issues Summary -->
+    <div class="card section">
+        <h2>Summary of Issues</h2>
+        <div class="col-3">
+            <div>
+                <strong>Services</strong>
+                <div class="scrollable">
                     {% if services_issues %}
-                        <div class="scrollable"><pre>{{ failed_out }}</pre></div>
+                        <div class="problem-item"><strong>Failed Services:</strong><pre>{{ failed_out }}</pre></div>
                     {% else %}
-                        None
+                        <div class="muted">No failed services detected.</div>
                     {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>System Error Logs</strong></td>
-                <td>
-                    {% if error_logs is defined and error_logs.stdout %}
-                        <div class="scrollable"><pre>{{ error_logs.stdout }}</pre></div>
-                    {% else %}
-                        None
-                    {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Logrotate configured on</strong></td>
-                <td>
-                    {% if logrotate_services_fact is defined and logrotate_services_fact %}
-                        <div class="scrollable"><pre>{% for service in logrotate_services_fact %}{{ service }}
-{% endfor %}</pre></div>
-                    {% else %}
-                        N/A
-                    {% endif %}
-                </td>
-            </tr>
-        </tbody>
-    </table>
-
-    <!-- Kubernetes section -->
-    <h2>Kubernetes Metrics & Problems</h2>
-    <table>
-        <tbody>
-            <tr>
-                <td><strong>All Pods</strong></td>
-                <td>
-                    {% if all_pods is defined and all_pods.stdout %}
-                        <div class="scrollable"><pre>{{ all_pods.stdout }}</pre></div>
-                    {% else %}
-                        N/A
-                    {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Non-Running Pods</strong></td>
-                <td>
+                </div>
+            </div>
+            <div>
+                <strong>Pods</strong>
+                <div class="scrollable">
                     {% if nonrun_out %}
-                        <div class="scrollable"><pre>{{ nonrun_out }}</pre></div>
-                    {% else %}
-                        None
+                        <div class="problem-item"><strong>Non-running Pods:</strong><pre>{{ nonrun_out }}</pre></div>
                     {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Pods with 0 Readiness</strong></td>
-                <td>
                     {% if zero_ready_out %}
-                        <div class="scrollable"><pre>{{ zero_ready_out }}</pre></div>
-                    {% else %}
-                        None
+                        <div class="problem-item"><strong>Pods with 0 Readiness:</strong><pre>{{ zero_ready_out }}</pre></div>
                     {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Warning Events</strong></td>
-                <td>
-                    {% if warnings_out %}
-                        <div class="scrollable"><pre>{{ warnings_out }}</pre></div>
-                    {% else %}
-                        None
+                    {% if (not nonrun_out) and (not zero_ready_out) %}
+                        <div class="muted">No problematic pods detected.</div>
                     {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Top Pods by CPU</strong></td>
-                <td>
-                    {% if top_pods_cpu_out %}
-                        <div class="scrollable"><pre>{{ top_pods_cpu_out }}</pre></div>
-                    {% else %}
-                        N/A
-                    {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Top Nodes by CPU</strong></td>
-                <td>
-                    {% if top_nodes_cpu_out %}
-                        <div class="scrollable"><pre>{{ top_nodes_cpu_out }}</pre></div>
-                    {% else %}
-                        N/A
-                    {% endif %}
-                </td>
-            </tr>
-            <tr>
-                <td><strong>Nodes NotReady (if collected)</strong></td>
-                <td>
+                </div>
+            </div>
+            <div>
+                <strong>Nodes</strong>
+                <div class="scrollable">
                     {% if node_not_ready_fact is defined %}
                         {% if node_not_ready_list | length > 0 %}
-                            <div class="scrollable"><pre>{% for n in node_not_ready_list %}{{ n }}
-{% endfor %}</pre></div>
+                            <div class="problem-item"><strong>NotReady Nodes:</strong>
+                                <pre>{% for n in node_not_ready_list %}{{ n }}{% endfor %}</pre>
+                            </div>
                         {% else %}
-                            All nodes Ready.
+                            <div class="muted">All nodes Ready.</div>
                         {% endif %}
                     {% else %}
-                        <div class="muted">Not collected. Run a task to gather node readiness or set <code>node_not_ready_fact</code>.</div>
+                        <div class="muted">Node readiness not collected.</div>
                     {% endif %}
-                </td>
-            </tr>
-        </tbody>
-    </table>
+                </div>
+            </div>
+        </div>
+    </div>
 
-    <div class="muted small">Tip: To get node readiness automatically, add a task that sets <code>node_not_ready_fact</code> (e.g. parse <code>kubectl get nodes -o jsonpath='{range .items[?(@.status.conditions[?(@.type==\"Ready\")].status==\"False\")]}{.metadata.name}{\"\\n\"}{end}'</code> or run an Ansible k8s_info lookup).</div>
+    <!-- System Metrics -->
+    <div class="card section">
+        <h2>System Metrics</h2>
+        <table>
+            <tbody>
+                <tr><td>OS Family</td><td>{{ ansible_distribution }} - {{ ansible_distribution_version }}</td></tr>
+                <tr><td>BIOS Vendor</td><td>{{ vendor[0] | regex_replace('^.*Vendor:\\s*', '') | trim if vendor|length > 0 else 'N/A' }}</td></tr>
+                <tr><td>Disk Usage (%)</td>
+                    <td>
+                        {% if disk_used is defined and disk_used.stdout %}
+                            <span class="{% if disk_used.stdout | int >= disk_threshold %}status-negative{% else %}status-positive{% endif %}">{{ disk_used.stdout }}%</span>
+                        {% else %}N/A{% endif %}
+                    </td>
+                </tr>
+                <tr><td>Free Memory</td>
+                    <td>
+                        {% if mem_free_mb is defined %}
+                            <span class="{% if mem_free_mb | int <= mem_threshold %}status-negative{% else %}status-positive{% endif %}">{{ mem_free_mb }} MB</span>
+                        {% else %}N/A{% endif %}
+                    </td>
+                </tr>
+                <tr><td>Load Average (1m)</td>
+                    <td>
+                        {% if ansible_loadavg is defined and ansible_loadavg['1m'] is defined %}
+                            <span class="{% if ansible_loadavg['1m'] | float >= load_threshold %}status-negative{% else %}status-positive{% endif %}">{{ ansible_loadavg['1m'] }}</span>
+                        {% else %}N/A{% endif %}
+                    </td>
+                </tr>
+                <tr><td>Timezone</td><td>{% if timezone_info is defined and timezone_info.stdout %}<pre>{{ timezone_info.stdout }}</pre>{% else %}N/A{% endif %}</td></tr>
+                <tr><td>Installed Packages</td>
+                    <td>{% if ansible_facts.packages is defined %}
+                        <div class="scrollable"><pre>{% for package in ansible_facts.packages.keys() | sort %}{{ package }}{% endfor %}</pre></div>
+                        {% else %}<div class="muted">Package facts not available.</div>{% endif %}
+                    </td>
+                </tr>
+                <tr><td>Running Services</td><td>{% if running_services is defined and running_services.stdout %}<div class="scrollable"><pre>{{ running_services.stdout }}</pre></div>{% else %}N/A{% endif %}</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Kubernetes -->
+    <div class="card section">
+        <h2>Kubernetes Metrics</h2>
+        <table>
+            <tbody>
+                <tr><td>All Pods</td><td>{% if all_pods is defined and all_pods.stdout %}<div class="scrollable"><pre>{{ all_pods.stdout }}</pre></div>{% else %}N/A{% endif %}</td></tr>
+                <tr><td>Non-Running Pods</td><td>{% if nonrun_out %}<div class="scrollable"><pre>{{ nonrun_out }}</pre></div>{% else %}None{% endif %}</td></tr>
+                <tr><td>Pods with 0 Readiness</td><td>{% if zero_ready_out %}<div class="scrollable"><pre>{{ zero_ready_out }}</pre></div>{% else %}None{% endif %}</td></tr>
+                <tr><td>Warning Events</td><td>{% if warnings_out %}<div class="scrollable"><pre>{{ warnings_out }}</pre></div>{% else %}None{% endif %}</td></tr>
+                <tr><td>Top Pods by CPU</td><td>{% if top_pods_cpu_out %}<div class="scrollable"><pre>{{ top_pods_cpu_out }}</pre></div>{% else %}N/A{% endif %}</td></tr>
+                <tr><td>Top Nodes by CPU</td><td>{% if top_nodes_cpu_out %}<div class="scrollable"><pre>{{ top_nodes_cpu_out }}</pre></div>{% else %}N/A{% endif %}</td></tr>
+            </tbody>
+        </table>
+    </div>
 </body>
 </html>
