@@ -1,268 +1,386 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Secure Ansible Playbook CGI Runner — all f-strings replaced safely with format()
-"""
-
-import cgi, cgitb, html, os, re, shutil, subprocess, sys, time
-from pathlib import Path
-from urllib.parse import quote
-
-cgitb.enable()
-
-# ---------------- CONFIG ----------------
-PLAYBOOKS = {
-    "intel": {"label": "Intel Health Check", "path": "/var/www/cgi-bin/intel-check.yml",
-              "inventories": ["intel-inv"], "force_ssh_user": "cloudadmin"},
-    "amd":   {"label": "AMD Health Check",   "path": "/var/www/cgi-bin/amd-check.yml",
-              "inventories": ["amd-inv"], "suggest_ssh_user": "serveradmin", "become_user": "awsuser"},
-}
-
-INVENTORIES = {
-    "intel-inv": {"label": "Intel Inventory", "path": "/var/www/cgi-bin/intel-inv.ini"},
-    "amd-inv":   {"label": "AMD Inventory",   "path": "/var/www/cgi-bin/amd-inv.ini"},
-}
-
-REPORT_BASES = ["/var/www/cgi-bin/reports"]
-
-ANSIBLE_BIN = shutil.which("ansible-playbook") or "/usr/bin/ansible-playbook"
-DEFAULT_USER = os.environ.get("ANSIBLE_SSH_USER", "ansadmin")
-COMMON_USERS = ["cloudadmin", "serveradmin", "ansadmin", "ec2-user"]
-
-RUN_TIMEOUT_SECS = 3600
-USE_SUDO = False
-SUDO_BIN = shutil.which("sudo") or "/usr/bin/sudo"
-
-RUN_HOME = "/var/lib/www-ansible/home"
-RUN_TMP  = "/var/lib/www-ansible/tmp"
-
-HOST_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-USER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-TAGS_RE = re.compile(r"^[A-Za-z0-9_,.-]+$")
-
-# ---------------- UTIL ----------------
-def header_ok(ct="text/html; charset=utf-8"):
-    print("Content-Type: {}".format(ct))
-    print()
-
-def safe(s):
-    return html.escape("" if s is None else str(s))
-
-def _realpath(p):
-    return os.path.realpath(p)
-
-def _is_under(base, target):
-    base_r = _realpath(base)
-    tgt_r  = _realpath(target)
-    return tgt_r == base_r or tgt_r.startswith(base_r + os.sep)
-
-# ---------------- Inventory ----------------
-def parse_ini_inventory_groups(path):
-    groups, current = {}, None
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        for raw in f:
-            line = raw.strip()
-            if not line or line.startswith(("#", ";")):
-                continue
-            if line.startswith("[") and line.endswith("]"):
-                current = line[1:-1].strip()
-                groups.setdefault(current, [])
-                continue
-            if current:
-                token = line.split()[0].split("=")[0].strip()
-                if token and token not in groups[current]:
-                    groups[current].append(token)
-    for k in ("all", "ungrouped"):
-        if k in groups and not groups[k]:
-            groups.pop(k, None)
-    for k in list(groups.keys()):
-        groups[k] = sorted(groups[k], key=str.lower)
-    return dict(sorted(groups.items(), key=lambda kv: kv[0].lower()))
-
-def get_inventory_maps(inv_key):
-    meta = INVENTORIES.get(inv_key or "", {})
-    path = meta.get("path", "")
-    if not path:
-        return {}, [], {}
-    groups_map = parse_ini_inventory_groups(path)
-    host_groups = {}
-    for g, hosts in groups_map.items():
-        for h in hosts:
-            host_groups.setdefault(h, []).append(g)
-    all_hosts = sorted(host_groups.keys(), key=str.lower)
-    return groups_map, all_hosts, host_groups
-
-# ---------------- Reports ----------------
-def find_reports(hosts, since_ts, limit=200):
-    out = []
-    needles = [h.lower() for h in (hosts or [])]
-    for base in REPORT_BASES:
-        if not os.path.isdir(base):
-            continue
-        for root, _, files in os.walk(base):
-            for fn in files:
-                if not fn.lower().endswith(".html"):
-                    continue
-                full = os.path.join(root, fn)
-                try:
-                    st = os.stat(full)
-                except OSError:
-                    continue
-                if st.st_mtime < since_ts:
-                    continue
-                if needles and not any(n in fn.lower() for n in needles):
-                    continue
-                rel = os.path.relpath(full, base)
-                out.append({"base": base, "rel": rel, "path": full, "mtime": st.st_mtime})
-    out.sort(key=lambda x: x["mtime"], reverse=True)
-    return out[:limit]
-
-def render_reports_list(title, reports, extra_note=""):
-    items = []
-    for r in reports:
-        try:
-            bidx = REPORT_BASES.index(r["base"])
-        except ValueError:
-            continue
-        href = "?action=view_report&b={}&p={}".format(bidx, quote(r["rel"]))
-        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["mtime"]))
-        items.append('<li><a href="{}" target="_blank">{}</a></li>'.format(href, safe("{} — {}".format(r["rel"], ts))))
-    if not items:
-        ul = "<p class='muted'>No matching reports found.</p>"
-    else:
-        ul = "<ul>\n{}\n</ul>".format("\n".join(items))
-    note_html = "<p class='muted'>{}</p>".format(safe(extra_note)) if extra_note else ""
-    return "<h3>{}</h3>{}{}".format(safe(title), ul, note_html)
-
-# ---------------- Form Renderer ----------------
-def render_form(msg="", form=None):
-    header_ok()
-    if form is None:
-        form = cgi.FieldStorage()
-
-    selected_playbook = form.getfirst("playbook", "") or ""
-    inventory_key     = form.getfirst("inventory_key", "") or ""
-    selected_regions  = form.getlist("regions") or []
-    posted_hosts      = form.getlist("hosts") or []
-
-    allowed_invs = PLAYBOOKS.get(selected_playbook, {}).get("inventories", [])
-    groups_map, all_hosts, host_groups = get_inventory_maps(inventory_key)
-
-    playbook_opts = "\n".join(
-        '<option value="{k}" {sel}>{lbl}</option>'.format(
-            k=safe(k), lbl=safe(v["label"]),
-            sel="selected" if k==selected_playbook else "")
-        for k,v in PLAYBOOKS.items()
-    )
-
-    inv_opts = "\n".join(
-        '<option value="{k}" {sel}>{lbl}</option>'.format(
-            k=safe(k), lbl=safe(INVENTORIES[k]["label"]),
-            sel="selected" if k==inventory_key else "")
-        for k in allowed_invs if k in INVENTORIES
-    )
-
-    regions_html = "\n".join(
-        '<label><input type="checkbox" name="regions" value="{g}" {chk}/> {g} ({n})</label>'.format(
-            g=safe(group), n=len(groups_map[group]),
-            chk="checked" if group in selected_regions else "")
-        for group in groups_map
-    ) if groups_map else "<p class='muted'>No regions to show. Select an inventory first.</p>"
-
-    hosts_html = "\n".join(
-        '<label><input type="checkbox" name="hosts" value="{h}" data-groups="{gs}" {chk}/> {h}</label>'.format(
-            h=safe(h), gs=safe(",".join(host_groups.get(h, []))),
-            chk="checked" if posted_hosts and h in posted_hosts else "")
-        for h in all_hosts
-    ) if all_hosts else "<p class='muted'>No hosts to show.</p>"
-
-    forced_user = PLAYBOOKS.get(selected_playbook, {}).get("force_ssh_user")
-    suggest_user = PLAYBOOKS.get(selected_playbook, {}).get("suggest_ssh_user")
-    preset = suggest_user if suggest_user else (form.getfirst("user") or DEFAULT_USER)
-
-    if forced_user:
-        user_input_html = '<input id="user_display" name="user_display" type="text" value="{v}" disabled />'.format(v=safe(forced_user))
-        user_input_html += '<input type="hidden" name="user" value="{v}" />'.format(v=safe(forced_user))
-        user_input_html += '<div class="muted">SSH login is forced to <strong>{v}</strong> for this playbook.</div>'.format(v=safe(forced_user))
-    else:
-        preset_is_common = preset in COMMON_USERS
-        opts_html = "\n".join('<option value="{u}" {sel}>{u}</option>'.format(u=safe(u), sel="selected" if (preset_is_common and u==preset) else "") for u in COMMON_USERS)
-        custom_val = "" if preset_is_common else safe(preset)
-        custom_display = "block" if not preset_is_common else "none"
-        user_input_html = '<select name="user" id="user_select">{opts}<option value="custom" {sel}>Custom...</option></select>'.format(opts=opts_html, sel="" if preset_is_common else "selected")
-        user_input_html += '<input id="user_custom" name="user_custom" type="text" placeholder="Enter custom SSH user" style="display:{};margin-top:6px;" value="{}"/>'.format(custom_display, custom_val)
-        user_input_html += """
-<script>
-(function(){
-var sel = document.getElementById('user_select');
-var inp = document.getElementById('user_custom');
-function toggle(){ inp.style.display = (sel.value==='custom') ? 'block' : 'none'; }
-sel.addEventListener('change', toggle); toggle();
-})();
-</script>
-"""
-
-    tags_val = safe(form.getfirst("tags",""))
-    check_val = "checked" if form.getfirst("check") else ""
-    become_val = "checked" if (form.getfirst("become") or not form) else ""
-    msg_html = "<div class='warn'>{}</div>".format(safe(msg)) if msg else ""
-
-    html_out = """
 <!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>Ansible Playbook CGI Runner</title></head>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>System Healthcheck Report - {{ inventory_hostname }}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.5; color: #222; }
+        .header { display: flex; gap: 20px; align-items: center; justify-content: space-between; }
+        h1 { margin: 0 0 6px 0; font-size: 20px; color: #333; border-bottom: 2px solid #333; padding-bottom: 8px; }
+        .meta { font-size: 13px; color: #444; }
+        .badges { display:flex; gap:12px; align-items:center; margin-top:10px; }
+        .badge { padding: 8px 12px; border-radius: 6px; font-weight:700; display:inline-flex; gap:8px; align-items:center; }
+        .badge .icon { font-size:18px; line-height:1; }
+        .status-positive { background:#e9f7ef; color:#1e7a34; border:1px solid #c6efd3; }
+        .status-warning  { background:#fff8e6; color:#8a6b00; border:1px solid #ffe8a8; }
+        .status-negative { background:#fdecea; color:#b02a37; border:1px solid #f6c6c6; }
+        .status-unknown  { background:#eef3ff; color:#1f4ea6; border:1px solid #d6e3ff; }
+
+        h2 { color:#444; margin-top:28px; background:#f6f6f6; padding:8px; border-left:4px solid #666; }
+        table { width:100%; border-collapse:collapse; margin-top:12px; margin-bottom:28px; }
+        th, td { border:1px solid #ddd; padding:8px; text-align:left; vertical-align:top; }
+        th { background:#fafafa; position:sticky; top:0; font-weight:700; }
+        tr:nth-child(even){ background:#fbfbfb; }
+        .scrollable { max-height:220px; overflow:auto; border:1px solid #eee; padding:8px; background:#fff; }
+        pre { margin:0; font-family:monospace; white-space:pre-wrap; word-wrap:break-word; }
+        .problem-item { margin:4px 0; padding:6px 8px; border-radius:4px; background:#fff; border:1px dashed #eee; }
+        .small { font-size:13px; color:#555; }
+        .col-3 { display:flex; gap:12px; }
+        .col-3 > div { flex:1; }
+        .muted { color:#666; font-size:13px; }
+    </style>
+</head>
 <body>
-<div class="card">
-<h1>Ansible Playbook CGI Runner</h1>
-{msg_html}
-<form method="post" action="" id="runnerForm">
-<input type="hidden" name="action" value="refresh" id="action"/>
-<label>Playbook</label>
-<select name="playbook" onchange="document.getElementById('action').value='refresh'; this.form.submit();">
-<option value="">Select a playbook…</option>
-{playbook_opts}
-</select>
-<label>Inventory</label>
-<select name="inventory_key" onchange="document.getElementById('action').value='refresh'; this.form.submit();">
-<option value="">(Pick a playbook first)</option>
-{inv_opts}
-</select>
-<div>Regions:</div>{regions_html}
-<div>Hosts:</div>{hosts_html}
-<label>SSH user</label>{user_input_html}
-<label>--tags</label><input type="text" name="tags" value="{tags_val}"/>
-<label><input type="checkbox" name="check" value="1" {check_val}/> Dry run</label>
-<label><input type="checkbox" name="become" value="1" {become_val}/> Become</label>
-<button type="submit" onclick="document.getElementById('action').value='run'">Run Playbook</button>
-<a href="?action=list_reports">Browse reports</a>
-</form>
-</div></body></html>
-""".format(msg_html=msg_html, playbook_opts=playbook_opts, inv_opts=inv_opts,
-           regions_html=regions_html, hosts_html=hosts_html, user_input_html=user_input_html,
-           tags_val=tags_val, check_val=check_val, become_val=become_val)
+    <div class="header">
+        <div>
+            <h1>System Healthcheck Report - {{ ansible_hostname }}</h1>
+            <div class="meta">
+                <span><strong>Generated on:</strong> {{ ansible_date_time.iso8601 }}</span> &nbsp;•&nbsp;
+                <span><strong>Hostname:</strong> {{ ansible_hostname }}</span> &nbsp;•&nbsp;
+                <span><strong>IP:</strong> {{ ansible_all_ipv4_addresses | default('N/A') }}</span>
+            </div>
 
-    print(html_out)
+            {# --- compute issue booleans and text safely --- #}
+            {% set failed_out = failed_services.stdout | default('') | trim %}
+            {% set nonrun_out = non_running_pods.stdout | default('') | trim %}
+            {% set zero_ready_out = (zero_ready_pods_fact | join('\n')) if (zero_ready_pods_fact is defined and zero_ready_pods_fact) else '' %}
+            {% set warnings_out = warnings.stdout | default('') | trim %}
+            {% set top_pods_cpu_out = top_pods_cpu_fact | default('') %}
+            {% set top_nodes_cpu_out = top_nodes_cpu.stdout | default('') %}
+            {% set node_not_ready_list = node_not_ready_fact if (node_not_ready_fact is defined) else [] %}
 
-# ---------------- MAIN ----------------
-def main():
-    try:
-        method = os.environ.get("REQUEST_METHOD","GET").upper()
-        form = cgi.FieldStorage()
-        action = form.getfirst("action","") or ""
-        if method=="GET" and action=="view_report":
-            serve_report(form)
-        elif method=="GET" and action=="list_reports":
-            list_reports_page(form)
-        elif method=="POST" and action=="run":
-            run_playbook(form)
-        else:
-            render_form("", form)
-    except Exception:
-        import traceback
-        header_ok()
-        print("<pre>{}</pre>".format(safe(traceback.format_exc())))
+            {% set services_issues = failed_out != '' %}
+            {% set pods_issues = nonrun_out != '' or zero_ready_out != '' %}
+            {% set warnings_issues = warnings_out != '' %}
+            {% if node_not_ready_fact is defined %}
+                {% set nodes_issues = (node_not_ready_list | length) > 0 %}
+            {% else %}
+                {% set nodes_issues = None %}
+            {% endif %}
 
-if __name__=="__main__":
-    main()
+            {# determine overall status #}
+            {% if (services_issues == false) and (pods_issues == false) and (nodes_issues == false) %}
+                {% set overall_text = 'All Services, Pods & Nodes OK' %}
+                {% set overall_class = 'status-positive' %}
+                {% set overall_icon = '✅' %}
+            {% elif services_issues or pods_issues or nodes_issues %}
+                {% set overall_text = 'Issues Detected: See details below' %}
+                {% set overall_class = 'status-negative' %}
+                {% set overall_icon = '❌' %}
+            {% else %}
+                {% set overall_text = 'Status Partially Unknown — some node info missing' %}
+                {% set overall_class = 'status-warning' %}
+                {% set overall_icon = '⚠️' %}
+            {% endif %}
+        </div>
+
+        <div style="text-align:right;">
+            <div class="badges" aria-hidden="true">
+                <span class="badge {{ overall_class }}" title="Overall">
+                    <span class="icon">{{ overall_icon }}</span><span>{{ overall_text }}</span>
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <!-- per-area quick badges -->
+    <div class="badges" style="margin-top:10px;">
+        {# Services badge #}
+        {% if services_issues %}
+            <span class="badge status-negative"><span class="icon">❌</span> Services: Issues</span>
+        {% elif services_issues == false %}
+            <span class="badge status-positive"><span class="icon">✅</span> Services: OK</span>
+        {% else %}
+            <span class="badge status-warning"><span class="icon">⚠️</span> Services: Unknown</span>
+        {% endif %}
+
+        {# Pods badge #}
+        {% if pods_issues %}
+            <span class="badge status-negative"><span class="icon">❌</span> Pods: Issues</span>
+        {% elif pods_issues == false %}
+            <span class="badge status-positive"><span class="icon">✅</span> Pods: OK</span>
+        {% else %}
+            <span class="badge status-warning"><span class="icon">⚠️</span> Pods: Unknown</span>
+        {% endif %}
+
+        {# Nodes badge #}
+        {% if node_not_ready_fact is defined %}
+            {% if nodes_issues %}
+                <span class="badge status-negative"><span class="icon">❌</span> Nodes: NotReady</span>
+            {% else %}
+                <span class="badge status-positive"><span class="icon">✅</span> Nodes: OK</span>
+            {% endif %}
+        {% else %}
+            <span class="badge status-unknown"><span class="icon">❔</span> Nodes: Not Collected</span>
+        {% endif %}
+    </div>
+
+    <!-- Short summary of what's wrong (if anything) -->
+    <h2>Summary of Issues (servers, pods, nodes)</h2>
+    <div class="col-3">
+        <div>
+            <strong>Services</strong>
+            <div class="small muted">Failed services captured from <code>failed_services.stdout</code></div>
+            <div class="scrollable">
+                {% if services_issues %}
+                    <div class="problem-item">
+                        <strong>Failed Services Output:</strong>
+                        <pre>{{ failed_out }}</pre>
+                    </div>
+                {% else %}
+                    <div class="muted">No failed services detected.</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div>
+            <strong>Pods</strong>
+            <div class="small muted">Non-running / zero-readiness pods</div>
+            <div class="scrollable">
+                {% if nonrun_out %}
+                    <div class="problem-item"><strong>Non-running Pods:</strong><pre>{{ nonrun_out }}</pre></div>
+                {% endif %}
+                {% if zero_ready_out %}
+                    <div class="problem-item"><strong>Pods with 0 Readiness:</strong><pre>{{ zero_ready_out }}</pre></div>
+                {% endif %}
+                {% if (not nonrun_out) and (not zero_ready_out) %}
+                    <div class="muted">No problematic pods detected.</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div>
+            <strong>Nodes</strong>
+            <div class="small muted">Node readiness / NotReady list (if collected)</div>
+            <div class="scrollable">
+                {% if node_not_ready_fact is defined %}
+                    {% if node_not_ready_list | length > 0 %}
+                        <div class="problem-item"><strong>NotReady Nodes:</strong>
+                            <pre>{% for n in node_not_ready_list %}{{ n }}
+{% endfor %}</pre>
+                        </div>
+                    {% else %}
+                        <div class="muted">All nodes appear Ready.</div>
+                    {% endif %}
+                {% else %}
+                    <div class="muted">Node readiness facts not collected. (Consider setting a task to gather <code>node_not_ready_fact</code> or run <code>kubectl get nodes -o wide</code>.)</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Full System Metrics table -->
+    <h2>System Metrics</h2>
+    <table>
+        <tbody>
+            <tr>
+                <td><strong>OS Family</strong></td>
+                <td>{{ ansible_distribution }} - {{ ansible_distribution_version }}</td>
+            </tr>
+            <tr>
+                <td><strong>BIOS Vendor</strong></td>
+                <td>
+                    {% set vendor = firmware_details | select('search', 'Vendor') | list %}
+                    {% if firmware_details is defined and vendor | length > 0 %}
+                        {{ vendor[0] | regex_replace('^.*Vendor:\\s*', '') | trim }}
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>BIOS Version / Release</strong></td>
+                <td>
+                    {% set version = firmware_details | select('search', 'Version') | list %}
+                    {% set release_date = firmware_details | select('search', 'Release Date') | list %}
+                    <div class="small">
+                        Version: {% if firmware_details is defined and version | length > 0 %}{{ version[0] | regex_replace('^.*Version:\\s*', '') | trim }}{% else %}N/A{% endif %} <br/>
+                        Release: {% if firmware_details is defined and release_date | length > 0 %}{{ release_date[0] | regex_replace('^.*Release Date:\\s*', '') | trim }}{% else %}N/A{% endif %}
+                    </div>
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Disk Usage (%)</strong></td>
+                <td>
+                    {% if disk_used is defined and disk_used.stdout %}
+                        <span class="{% if disk_used.stdout | int >= disk_threshold %}status-negative{% else %}status-positive{% endif %}">
+                            {{ disk_used.stdout }}%
+                        </span>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Free Memory</strong></td>
+                <td>
+                    {% if mem_free_mb is defined %}
+                        <span class="{% if mem_free_mb | int <= mem_threshold %}status-negative{% else %}status-positive{% endif %}">
+                            {{ mem_free_mb }} MB
+                        </span>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Load Average (1m)</strong></td>
+                <td>
+                    {% if ansible_loadavg is defined and ansible_loadavg['1m'] is defined %}
+                        <span class="{% if ansible_loadavg['1m'] | float >= load_threshold %}status-negative{% else %}status-positive{% endif %}">
+                            {{ ansible_loadavg['1m'] }}
+                        </span>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Timezone</strong></td>
+                <td>
+                    {% if timezone_info is defined and timezone_info.stdout %}<pre>{{ timezone_info.stdout }}</pre>{% else %}N/A{% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Installed Packages</strong></td>
+                <td>
+                    {% if ansible_facts.packages is defined %}
+                        <div class="scrollable">
+                            <pre>{% for package in ansible_facts.packages.keys() | sort %}{{ package }}
+{% endfor %}</pre>
+                        </div>
+                    {% else %}
+                        <div class="muted">Package facts not available.</div>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Running Services</strong></td>
+                <td>
+                    {% if running_services is defined and running_services.stdout %}
+                        <div class="scrollable"><pre>{{ running_services.stdout }}</pre></div>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Failed Services (details)</strong></td>
+                <td>
+                    {% if services_issues %}
+                        <div class="scrollable"><pre>{{ failed_out }}</pre></div>
+                    {% else %}
+                        None
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>System Error Logs</strong></td>
+                <td>
+                    {% if error_logs is defined and error_logs.stdout %}
+                        <div class="scrollable"><pre>{{ error_logs.stdout }}</pre></div>
+                    {% else %}
+                        None
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Logrotate configured on</strong></td>
+                <td>
+                    {% if logrotate_services_fact is defined and logrotate_services_fact %}
+                        <div class="scrollable"><pre>{% for service in logrotate_services_fact %}{{ service }}
+{% endfor %}</pre></div>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- Kubernetes section -->
+    <h2>Kubernetes Metrics & Problems</h2>
+    <table>
+        <tbody>
+            <tr>
+                <td><strong>All Pods</strong></td>
+                <td>
+                    {% if all_pods is defined and all_pods.stdout %}
+                        <div class="scrollable"><pre>{{ all_pods.stdout }}</pre></div>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Non-Running Pods</strong></td>
+                <td>
+                    {% if nonrun_out %}
+                        <div class="scrollable"><pre>{{ nonrun_out }}</pre></div>
+                    {% else %}
+                        None
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Pods with 0 Readiness</strong></td>
+                <td>
+                    {% if zero_ready_out %}
+                        <div class="scrollable"><pre>{{ zero_ready_out }}</pre></div>
+                    {% else %}
+                        None
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Warning Events</strong></td>
+                <td>
+                    {% if warnings_out %}
+                        <div class="scrollable"><pre>{{ warnings_out }}</pre></div>
+                    {% else %}
+                        None
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Top Pods by CPU</strong></td>
+                <td>
+                    {% if top_pods_cpu_out %}
+                        <div class="scrollable"><pre>{{ top_pods_cpu_out }}</pre></div>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Top Nodes by CPU</strong></td>
+                <td>
+                    {% if top_nodes_cpu_out %}
+                        <div class="scrollable"><pre>{{ top_nodes_cpu_out }}</pre></div>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td><strong>Nodes NotReady (if collected)</strong></td>
+                <td>
+                    {% if node_not_ready_fact is defined %}
+                        {% if node_not_ready_list | length > 0 %}
+                            <div class="scrollable"><pre>{% for n in node_not_ready_list %}{{ n }}
+{% endfor %}</pre></div>
+                        {% else %}
+                            All nodes Ready.
+                        {% endif %}
+                    {% else %}
+                        <div class="muted">Not collected. Run a task to gather node readiness or set <code>node_not_ready_fact</code>.</div>
+                    {% endif %}
+                </td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="muted small">Tip: To get node readiness automatically, add a task that sets <code>node_not_ready_fact</code> (e.g. parse <code>kubectl get nodes -o jsonpath='{range .items[?(@.status.conditions[?(@.type==\"Ready\")].status==\"False\")]}{.metadata.name}{\"\\n\"}{end}'</code> or run an Ansible k8s_info lookup).</div>
+</body>
+</html>
