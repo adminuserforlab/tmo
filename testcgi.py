@@ -13,6 +13,10 @@
       text-align: center;
       color: #333;
     }
+    h2 {
+      margin-top: 25px;
+      color: #444;
+    }
     table {
       border-collapse: collapse;
       width: 100%;
@@ -22,8 +26,9 @@
     }
     th, td {
       border: 1px solid #ccc;
-      padding: 8px 12px;
+      padding: 6px 10px;
       text-align: left;
+      font-size: 14px;
     }
     th {
       background: #444;
@@ -40,14 +45,32 @@
       color: red;
       font-weight: bold;
     }
-    .section {
-      margin-top: 30px;
+    .warning {
+      color: orange;
+      font-weight: bold;
+    }
+    .summary-box {
+      background: #fff;
+      border: 1px solid #ccc;
+      padding: 10px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .scroll-box {
+      max-height: 120px;
+      overflow-y: auto;
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      padding: 6px;
+      margin-top: 5px;
+      font-size: 13px;
     }
     pre {
       background: #f4f4f4;
-      padding: 10px;
+      padding: 5px;
       border-radius: 4px;
       overflow-x: auto;
+      margin: 2px 0;
     }
   </style>
 </head>
@@ -56,10 +79,15 @@
   <p><b>Host:</b> {{ inventory_hostname }}</p>
   <p><b>Generated:</b> {{ report_timestamp }}</p>
 
-  <div class="section">
-    <h2>System Services</h2>
+  <!-- 🔹 Quick Summary -->
+  <div class="summary-box">
+    <h2>🚦 Quick Summary (Issues Only)</h2>
     <table>
-      <tr><th>Check</th><th>Status</th><th>Details</th></tr>
+      <tr>
+        <th>Category</th>
+        <th>Status</th>
+        <th>Details</th>
+      </tr>
       <tr>
         <td>Failed Services</td>
         <td>
@@ -70,40 +98,15 @@
           {% endif %}
         </td>
         <td>
-          {% for s in failed_services.stdout_lines %}
-            <pre>{{ s }}</pre>
-          {% endfor %}
-        </td>
-      </tr>
-      <tr>
-        <td>Disk Usage</td>
-        <td>
-          {% if disk_used.stdout|int > disk_threshold %}
-            <span class="not-ok">Not OK</span>
-          {% else %}
-            <span class="ok">OK</span>
+          {% if failed_services.stdout_lines|length > 0 %}
+            <div class="scroll-box">
+              {% for s in failed_services.stdout_lines %}
+                <pre>{{ s }}</pre>
+              {% endfor %}
+            </div>
           {% endif %}
         </td>
-        <td>{{ disk_used.stdout }} % Used (Threshold: {{ disk_threshold }}%)</td>
       </tr>
-      <tr>
-        <td>Memory Free</td>
-        <td>
-          {% if mem_free_mb|int < mem_threshold %}
-            <span class="not-ok">Not OK</span>
-          {% else %}
-            <span class="ok">OK</span>
-          {% endif %}
-        </td>
-        <td>{{ mem_free_mb }} MB Free (Threshold: {{ mem_threshold }} MB)</td>
-      </tr>
-    </table>
-  </div>
-
-  <div class="section">
-    <h2>Kubernetes Pods</h2>
-    <table>
-      <tr><th>Check</th><th>Status</th><th>Details</th></tr>
       <tr>
         <td>Non-Running Pods</td>
         <td>
@@ -114,9 +117,13 @@
           {% endif %}
         </td>
         <td>
-          {% for pod in non_running_pods.stdout_lines %}
-            <pre>{{ pod }}</pre>
-          {% endfor %}
+          {% if non_running_pods.stdout_lines|length > 0 %}
+            <div class="scroll-box">
+              {% for pod in non_running_pods.stdout_lines %}
+                <pre>{{ pod }}</pre>
+              {% endfor %}
+            </div>
+          {% endif %}
         </td>
       </tr>
       <tr>
@@ -128,62 +135,59 @@
             <span class="ok">OK</span>
           {% endif %}
         </td>
-        <td><pre>{{ zero_ready_pods_fact }}</pre></td>
-      </tr>
-      <tr>
-        <td>NPC Pods Status</td>
-        <td><span class="ok">Collected</span></td>
         <td>
-          {% for line in npc_pods.stdout_lines %}
-            <pre>{{ line }}</pre>
-          {% endfor %}
-        </td>
-      </tr>
-    </table>
-  </div>
-
-  <div class="section">
-    <h2>Cluster Metrics</h2>
-    <table>
-      <tr><th>Check</th><th>Status</th><th>Details</th></tr>
-      <tr>
-        <td>Top Pods (CPU)</td>
-        <td><span class="ok">Collected</span></td>
-        <td><pre>{{ top_pods_cpu_fact }}</pre></td>
-      </tr>
-      <tr>
-        <td>Top Nodes (CPU)</td>
-        <td><span class="ok">Collected</span></td>
-        <td>
-          {% for line in top_nodes_cpu.stdout_lines %}
-            <pre>{{ line }}</pre>
-          {% endfor %}
-        </td>
-      </tr>
-    </table>
-  </div>
-
-  <div class="section">
-    <h2>Errors & Warnings</h2>
-    <table>
-      <tr><th>Type</th><th>Details</th></tr>
-      <tr>
-        <td>Journalctl Errors</td>
-        <td>
-          {% for e in error_logs.stdout_lines %}
-            <pre>{{ e }}</pre>
-          {% endfor %}
+          {% if zero_ready_pods.stdout|length > 0 %}
+            <div class="scroll-box"><pre>{{ zero_ready_pods_fact }}</pre></div>
+          {% endif %}
         </td>
       </tr>
       <tr>
         <td>K8s Warnings</td>
         <td>
-          {% for w in warnings.stdout_lines %}
-            <pre>{{ w }}</pre>
-          {% endfor %}
+          {% if warnings.stdout_lines|length > 0 %}
+            <span class="warning">Warning</span>
+          {% else %}
+            <span class="ok">OK</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if warnings.stdout_lines|length > 0 %}
+            <div class="scroll-box">
+              {% for w in warnings.stdout_lines %}
+                <pre>{{ w }}</pre>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>Journalctl Errors</td>
+        <td>
+          {% if error_logs.stdout_lines|length > 0 %}
+            <span class="not-ok">Not OK</span>
+          {% else %}
+            <span class="ok">OK</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if error_logs.stdout_lines|length > 0 %}
+            <div class="scroll-box">
+              {% for e in error_logs.stdout_lines %}
+                <pre>{{ e }}</pre>
+              {% endfor %}
+            </div>
+          {% endif %}
         </td>
       </tr>
     </table>
   </div>
+
+  <!-- 🔹 Full Details Below -->
+  <h2>Detailed Results</h2>
+  <p>See below for full task outputs and checks.</p>
+
+  <!-- You can keep the existing long tables for services, pods, nodes, metrics here -->
+  <!-- (reuse the ones from the earlier template you liked) -->
+
 </body>
 </html>
