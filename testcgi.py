@@ -7,147 +7,172 @@
     body {
       font-family: Arial, sans-serif;
       margin: 20px;
-      background: #f9f9f9;
+      background-color: #f9f9f9;
     }
     h1, h2 {
-      color: #333;
+      text-align: center;
     }
     .summary {
-      padding: 15px;
-      background: #eef5ff;
-      border-left: 6px solid #007bff;
+      border: 2px solid #444;
+      background: #fff3cd;
+      padding: 10px;
       margin-bottom: 20px;
     }
-    .ok { color: green; font-weight: bold; }
-    .not-ok { color: red; font-weight: bold; }
-    .warn { color: orange; font-weight: bold; }
-    .section {
-      margin-bottom: 25px;
-      background: #fff;
-      padding: 10px;
-      border-radius: 8px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    .ok {
+      color: green;
+      font-weight: bold;
     }
-    .section h2 {
-      margin-top: 0;
-      font-size: 18px;
-      border-bottom: 1px solid #ddd;
-      padding-bottom: 5px;
+    .notok {
+      color: red;
+      font-weight: bold;
+    }
+    .warn {
+      color: orange;
+      font-weight: bold;
+    }
+    .section {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      margin-bottom: 15px;
+      padding: 10px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    .section h3 {
+      margin: 0 0 10px;
+      padding: 8px;
+      background: #f0f0f0;
+      border-radius: 4px;
     }
     .scroll-box {
       max-height: 200px;
       overflow-y: auto;
-      background: #f4f4f4;
-      padding: 10px;
-      border: 1px solid #ccc;
-      border-radius: 6px;
+      background: #fefefe;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
       font-family: monospace;
-      font-size: 13px;
       white-space: pre-wrap;
     }
   </style>
 </head>
 <body>
 
-  <h1>NPC Health Check Report</h1>
-  <p><b>Host:</b> {{ inventory_hostname }}</p>
-  <p><b>Date:</b> {{ ansible_date_time.date }} {{ ansible_date_time.time }}</p>
+<h1>NPC Health Check Report</h1>
+<h2>Host: {{ inventory_hostname }}</h2>
+<p><b>Generated at:</b> {{ report_timestamp }}</p>
 
-  <!-- ================= SUMMARY ================= -->
-  <div class="summary">
-    <h2>Summary</h2>
-    <ul>
-      <li>Failed Services: {% if failed_services.stdout %}<span class="not-ok">Not OK</span>{% else %}<span class="ok">OK</span>{% endif %}</li>
-      <li>Non-Running Pods: {% if non_running_pods.stdout %}<span class="not-ok">Not OK</span>{% else %}<span class="ok">OK</span>{% endif %}</li>
-      <li>Pods with 0/ Ready: {% if zero_ready_pods_fact %}<span class="not-ok">Not OK</span>{% else %}<span class="ok">OK</span>{% endif %}</li>
-      <li>Warnings: {% if warnings.stdout %}<span class="warn">Warning</span>{% else %}<span class="ok">OK</span>{% endif %}</li>
-      <li>Disk Usage: {% if disk_used.stdout|int > disk_threshold %}<span class="not-ok">High</span>{% else %}<span class="ok">OK</span>{% endif %}</li>
-      <li>Memory Free: {% if mem_free_mb|int < mem_threshold %}<span class="not-ok">Low</span>{% else %}<span class="ok">OK</span>{% endif %}</li>
-      <li>Load Avg: {% if ansible_load_avg.1|float > load_threshold %}<span class="not-ok">High</span>{% else %}<span class="ok">OK</span>{% endif %}</li>
-    </ul>
-  </div>
+<div class="summary">
+  <h2>⚠️ Summary of Issues</h2>
+  <ul>
+    {% if failed_services.stdout_lines %}
+      <li class="notok">Failed Services: {{ failed_services.stdout_lines|length }}</li>
+    {% else %}
+      <li class="ok">Failed Services: None</li>
+    {% endif %}
 
-  <!-- ================= DETAILS ================= -->
+    {% if not_ready_pods.stdout_lines %}
+      <li class="notok">Pods Not Ready: {{ not_ready_pods.stdout_lines|length }}</li>
+    {% else %}
+      <li class="ok">Pods Not Ready: None</li>
+    {% endif %}
 
-  <div class="section">
-    <h2>Failed Services</h2>
-    <div class="scroll-box">{{ failed_services.stdout | default("None") }}</div>
-  </div>
+    {% if zero_ready_pods_fact %}
+      <li class="warn">Pods with 0/ Ready: Found</li>
+    {% else %}
+      <li class="ok">Pods with 0/ Ready: None</li>
+    {% endif %}
 
-  <div class="section">
-    <h2>Non-Running Pods</h2>
-    <div class="scroll-box">{{ non_running_pods.stdout | default("None") }}</div>
-  </div>
+    {% if warnings.stdout %}
+      <li class="warn">K8s Warnings: Present</li>
+    {% else %}
+      <li class="ok">K8s Warnings: None</li>
+    {% endif %}
+  </ul>
+</div>
 
-  <div class="section">
-    <h2>Pods with 0/ Readiness</h2>
-    <div class="scroll-box">{{ zero_ready_pods_fact | default("None") }}</div>
-  </div>
+<!-- Sections -->
 
-  <div class="section">
-    <h2>Kubernetes Warnings</h2>
-    <div class="scroll-box">{{ warnings.stdout | default("None") }}</div>
-  </div>
+<div class="section">
+  <h3>Failed Services</h3>
+  {% if failed_services.stdout_lines %}
+    <span class="notok">Not OK</span>
+    <div class="scroll-box">{{ failed_services.stdout }}</div>
+  {% else %}
+    <span class="ok">OK</span>
+  {% endif %}
+</div>
 
-  <div class="section">
-    <h2>Top Pods by CPU</h2>
-    <div class="scroll-box">{{ top_pods_cpu_fact | default("None") }}</div>
-  </div>
+<div class="section">
+  <h3>Pods Not Ready</h3>
+  {% if not_ready_pods.stdout_lines %}
+    <span class="notok">Not OK</span>
+    <div class="scroll-box">{{ not_ready_pods.stdout }}</div>
+  {% else %}
+    <span class="ok">OK</span>
+  {% endif %}
+</div>
 
-  <div class="section">
-    <h2>Top Nodes by CPU</h2>
-    <div class="scroll-box">{{ top_nodes_cpu.stdout | default("None") }}</div>
-  </div>
+<div class="section">
+  <h3>Zero Ready Pods</h3>
+  {% if zero_ready_pods_fact %}
+    <span class="warn">Warning</span>
+    <div class="scroll-box">{{ zero_ready_pods_fact }}</div>
+  {% else %}
+    <span class="ok">OK</span>
+  {% endif %}
+</div>
 
-  <div class="section">
-    <h2>NPC SPS Status</h2>
-    <div class="scroll-box">{{ sps_status.stdout | default("N/A") }}</div>
-  </div>
+<div class="section">
+  <h3>Kubernetes Warnings</h3>
+  {% if warnings.stdout %}
+    <span class="warn">Warning</span>
+    <div class="scroll-box">{{ warnings.stdout }}</div>
+  {% else %}
+    <span class="ok">OK</span>
+  {% endif %}
+</div>
 
-  <div class="section">
-    <h2>Network Status</h2>
-    <div class="scroll-box">{{ net_status.stdout | default("N/A") }}</div>
-  </div>
+<div class="section">
+  <h3>Top Pods by CPU</h3>
+  <div class="scroll-box">{{ top_pods_cpu_fact }}</div>
+</div>
 
-  <div class="section">
-    <h2>XDR Status</h2>
-    <div class="scroll-box">{{ xdr_status.stdout | default("N/A") }}</div>
-  </div>
+<div class="section">
+  <h3>Top Nodes by CPU</h3>
+  <div class="scroll-box">{{ top_nodes_cpu.stdout }}</div>
+</div>
 
-  <div class="section">
-    <h2>Diameter Peers</h2>
-    <div class="scroll-box">{{ diameter_peers.stdout | default("N/A") }}</div>
-  </div>
+<div class="section">
+  <h3>NPC Pods Status</h3>
+  <div class="scroll-box">{{ npc_pods.stdout }}</div>
+</div>
 
-  <div class="section">
-    <h2>Diameter Routes</h2>
-    <div class="scroll-box">{{ diameter_routes.stdout | default("N/A") }}</div>
-  </div>
+<div class="section">
+  <h3>Database States</h3>
+  <div class="scroll-box">{{ db_states.stdout }}</div>
+</div>
 
-  <div class="section">
-    <h2>DB States</h2>
-    <div class="scroll-box">{{ db_states.stdout | default("N/A") }}</div>
-  </div>
+<div class="section">
+  <h3>System Preferences</h3>
+  <div class="scroll-box">{{ system_prefs.stdout }}</div>
+</div>
 
-  <div class="section">
-    <h2>Alarms</h2>
-    <div class="scroll-box">
-      {% for result in alarm_results.results %}
-        <b>Namespace:</b> {{ result.item }}<br>
-        {{ result.stdout | default("No alarms") }}<br><br>
-      {% endfor %}
-    </div>
-  </div>
+<div class="section">
+  <h3>Alarm Check Results</h3>
+  {% for item in alarm_results.results %}
+    <h4>Namespace: {{ item.item }}</h4>
+    <div class="scroll-box">{{ item.stdout }}</div>
+  {% endfor %}
+</div>
 
-  <div class="section">
-    <h2>RSV Check</h2>
-    <div class="scroll-box">
-      {% for result in rsv_results.results %}
-        <b>Namespace:</b> {{ result.item }}<br>
-        {{ result.stdout | default("No RSV issues") }}<br><br>
-      {% endfor %}
-    </div>
-  </div>
+<div class="section">
+  <h3>RSV Check Results</h3>
+  {% for item in rsv_results.results %}
+    <h4>Namespace: {{ item.item }}</h4>
+    <div class="scroll-box">{{ item.stdout }}</div>
+  {% endfor %}
+</div>
 
 </body>
 </html>
