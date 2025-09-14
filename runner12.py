@@ -218,62 +218,61 @@ def render_form(msg: str = "", form: cgi.FieldStorage = None):
   <meta charset="utf-8" />
   <title>Ansible Playbook CGI Runner</title>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
-    .card { max-width: 900px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }
-    h1 { margin-top: 0; }
-    label { display:block; margin: 12px 0 6px; font-weight: 600; }
-    select, input[type=text], input[type=password] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    .muted { color: #666; font-size: 0.95em; }
-    .warn { background: #fff3cd; border: 1px solid #ffeeba; padding: 8px 12px; border-radius: 8px; }
-    .group-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-gap: 8px; }
-    .hosts-box { max-height: 260px; overflow-y: auto; padding: 8px; border: 1px solid #eee; border-radius: 8px; background:#fff; }
-    .toolbar { display:flex; gap:8px; margin: 6px 0 10px; }
-    .tbtn { padding:6px 10px; border:1px solid #ccc; border-radius:6px; background:#f8f9fa; cursor:pointer; }
-    /* unified buttons */
-    .actions { display:flex; gap:16px; margin-top:16px; align-items:center; }
-    .btn, .btn:link, .btn:visited {
+    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
+    .card {{ max-width: 900px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }}
+    h1 {{ margin-top: 0; }}
+    label {{ display:block; margin: 12px 0 6px; font-weight: 600; }}
+    select, input[type=text], input[type=password] {{ width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 8px; }}
+    .row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
+    .muted {{ color: #666; font-size: 0.95em; }}
+    .warn {{ background: #fff3cd; border: 1px solid #ffeeba; padding: 8px 12px; border-radius: 8px; }}
+    .group-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-gap: 8px; }}
+    .hosts-box {{ max-height: 260px; overflow-y: auto; padding: 8px; border: 1px solid #eee; border-radius: 8px; background:#fff; }}
+    .toolbar {{ display:flex; gap:8px; margin: 6px 0 10px; }}
+    .tbtn {{ padding:6px 10px; border:1px solid #ccc; border-radius:6px; background:#f8f9fa; cursor:pointer; }}
+    .actions {{ display:flex; gap:16px; margin-top:16px; align-items:center; }}
+    .btn, .btn:link, .btn:visited {{
       display:inline-flex; align-items:center; justify-content:center;
       height:44px; padding:0 18px; font-weight:600; font-size:16px; line-height:1;
       color:#fff; background:#0d6efd; border:0; border-radius:10px; text-decoration:none; cursor:pointer;
       box-shadow:0 1px 2px rgba(0,0,0,.06), 0 4px 14px rgba(13,110,253,.25);
       transition:background .15s ease, transform .02s ease; appearance:none;
-    }
-    button.btn { border:0; }
-    .btn:hover { background:#0b5ed7; }
-    .btn:active { transform:translateY(1px); }
+    }}
+    button.btn {{ border:0; }}
+    .btn:hover {{ background:#0b5ed7; }}
+    .btn:active {{ transform:translateY(1px); }}
   </style>
   <script>
-    function selectAllHosts(val) {
+    function selectAllHosts(val) {{
       var boxes = document.querySelectorAll('input[name="hosts"]');
-      for (var i=0; i<boxes.length; i++) { boxes[i].checked = val; }
-    }
-    function toggleInventorySubmit() {
+      for (var i=0; i<boxes.length; i++) {{ boxes[i].checked = val; }}
+    }}
+    function toggleInventorySubmit() {{
       document.getElementById('action').value = 'refresh';
       document.getElementById('runnerForm').submit();
-    }
-    function onPlaybookChanged() {
+    }}
+    function onPlaybookChanged() {{
       document.getElementById('action').value = 'refresh';
       document.getElementById('runnerForm').submit();
-    }
-    function syncRegionToHosts() {
+    }}
+    function syncRegionToHosts() {{
       var selected = new Set();
       var r = document.querySelectorAll('input[name="regions"]:checked');
       for (var i=0;i<r.length;i++) selected.add(r[i].value);
       var hosts = document.querySelectorAll('input[name="hosts"]');
-      for (var j=0;j<hosts.length;j++) {
+      for (var j=0;j<hosts.length;j++) {{
         var cb = hosts[j];
         var groups = (cb.getAttribute('data-groups') || '').split(',');
         var match = false;
-        for (var k=0;k<groups.length;k++) { if (selected.has(groups[k])) { match = true; break; } }
-        if (selected.size > 0) { cb.checked = match; }
-      }
-    }
-    document.addEventListener('DOMContentLoaded', function() {
+        for (var k=0;k<groups.length;k++) {{ if (selected.has(groups[k])) {{ match = true; break; }} }}
+        if (selected.size > 0) {{ cb.checked = match; }}
+      }}
+    }}
+    document.addEventListener('DOMContentLoaded', function() {{
       var regionCbs = document.querySelectorAll('input[name="regions"]');
       for (var i=0;i<regionCbs.length;i++) regionCbs[i].addEventListener('change', syncRegionToHosts);
       syncRegionToHosts();
-    });
+    }});
   </script>
 </head>
 <body>
@@ -337,17 +336,17 @@ def render_form(msg: str = "", form: cgi.FieldStorage = None):
 </body>
 </html>
 """.format(
-        msg_html=msg_html,
-        sel_pb=("selected" if not selected_playbook else ""),
-        playbook_opts=playbook_opts,
-        inv_opts=inv_opts,
-        regions_html=regions_html,
-        hosts_html=hosts_html,
-        user_val=user_val,
-        tags_val=tags_val,
-        check_val=check_val,
-        become_val=become_val,
-    ))
+    msg_html=msg_html,
+    sel_pb=("selected" if not selected_playbook else ""),
+    playbook_opts=playbook_opts,
+    inv_opts=inv_opts,
+    regions_html=regions_html,
+    hosts_html=hosts_html,
+    user_val=user_val,
+    tags_val=tags_val,
+    check_val=check_val,
+    become_val=become_val,
+)
 
 # ---------------- START JOB (background) ----------------
 def start_job(form: cgi.FieldStorage):
