@@ -19,209 +19,218 @@ PLAYBOOKS = {
     "intel": {
         "label": "Intel Health Check",
         "path": "/var/www/cgi-bin/intel-check.yml",
-        "inventories": ["intel-inv"],
-        "force_ssh_user": "cloudadmin",
     },
-    "amd": {
-        "label": "AMD Health Check",
-        "path": "/var/www/cgi-bin/amd-check.yml",
-        "inventories": ["amd-inv"],
+    "nokia": {
+        "label": "Nokia Health Check",
+        "path": "/var/www/cgi-bin/nokia-check.yml",
     },
 }
 
-INVENTORIES = {
-    "intel-inv": {"label": "Intel Inventory", "path": "/var/www/cgi-bin/intel-inv.ini"},
-    "amd-inv":   {"label": "AMD Inventory",   "path": "/var/www/cgi-bin/amd-inv.ini"},
-}
+REPORT_BASES = ["/tmp"]
 
-REPORT_BASES = [
-    "/var/www/cgi-bin/reports",
-    "/tmp"
-]
+JOB_DIR = Path("/tmp/www-ansible/tmp")
+os.makedirs(JOB_DIR, exist_ok=True)
 
-ANSIBLE_BIN = shutil.which("ansible-playbook") or "/usr/bin/ansible-playbook"
-DEFAULT_USER = os.environ.get("ANSIBLE_SSH_USER", "ansadmin")
-RUN_TIMEOUT_SECS = 8 * 3600
-
-USE_SUDO = False
-SUDO_BIN = shutil.which("sudo") or "/usr/bin/sudo"
-
-RUN_HOME = "/tmp/www-ansible/home"
-RUN_TMP  = "/tmp/www-ansible/tmp"
-JOB_DIR  = "/tmp/www-ansible/tmp"
-
-HOST_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-USER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-TAGS_RE = re.compile(r"^[A-Za-z0-9_,.-]+$")
-
-
-# ---------------- UTIL ----------------
-def header_ok(ct="text/html; charset=utf-8"):
-    print("Content-Type: " + ct)
+def header_ok():
+    print("Content-Type: text/html; charset=utf-8")
     print()
 
-def safe(s: str) -> str:
-    return html.escape("" if s is None else str(s))
-
-def ensure_dirs():
-    Path(RUN_HOME).mkdir(parents=True, exist_ok=True)
-    Path(RUN_TMP).mkdir(parents=True, exist_ok=True)
-    Path(JOB_DIR).mkdir(parents=True, exist_ok=True)
-
-def new_job_id():
-    return "%d_%s" % (int(time.time()), os.urandom(5).hex())
+def header_json():
+    print("Content-Type: application/json")
+    print()
 
 def job_paths(job_id):
-    jdir = os.path.join(JOB_DIR, job_id)
+    jdir = JOB_DIR / job_id
     return {
-        "dir": jdir,
-        "log": os.path.join(jdir, "output.log"),
-        "meta": os.path.join(jdir, "meta.json"),
-        "rc": os.path.join(jdir, "rc.txt"),
-        "cmd": os.path.join(jdir, "command.txt"),
+        "dir": str(jdir),
+        "stdout": str(jdir / "stdout.txt"),
+        "rc": str(jdir / "rc.txt"),
+        "start": str(jdir / "start.txt"),
     }
 
-def write_json(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f)
-
-def read_json(path, default=None):
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except Exception:
-        return default
-
-def process_running(pid):
-    try:
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        return False
-
-
-# ---------------- REPORT SCAN ----------------
-def find_latest_report():
-    latest = None
-    latest_mtime = 0
-    for base in REPORT_BASES:
-        if not os.path.isdir(base):
-            continue
-        for root, _, files in os.walk(base):
-            for f in files:
-                if f.endswith(".html"):
-                    path = os.path.join(root, f)
-                    try:
-                        mtime = os.path.getmtime(path)
-                        if mtime > latest_mtime:
-                            latest_mtime = mtime
-                            latest = path
-                    except Exception:
-                        pass
-    return latest
-
-
-# ---------------- START JOB ----------------
-def start_job(form: cgi.FieldStorage):
-    playbook_key = form.getfirst("playbook", "")
-    inventory_key = form.getfirst("inventory_key", "")
-    hosts = form.getlist("hosts")
-    user  = (form.getfirst("user") or DEFAULT_USER).strip()
-
-    if playbook_key not in PLAYBOOKS:
-        header_ok(); print("<pre>Invalid playbook</pre>"); return
-    if inventory_key not in INVENTORIES:
-        header_ok(); print("<pre>Invalid inventory</pre>"); return
-    if not hosts:
-        header_ok(); print("<pre>No hosts selected</pre>"); return
-
-    playbook_path  = PLAYBOOKS[playbook_key]["path"]
-    inventory_path = INVENTORIES[inventory_key]["path"]
-
-    effective_user = PLAYBOOKS[playbook_key].get("force_ssh_user", user)
-
-    ensure_dirs()
-    local_tmp = os.path.join(RUN_TMP, "ansible-local")
-    Path(local_tmp).mkdir(parents=True, exist_ok=True)
-
-    cmd = [ANSIBLE_BIN, "-i", inventory_path, playbook_path, "--limit", ",".join(hosts), "-u", effective_user]
-
-    if USE_SUDO:
-        cmd = [SUDO_BIN, "-n", "--"] + cmd
-
-    env = os.environ.copy()
-    env["LANG"] = "C.UTF-8"
-    env["HOME"] = RUN_HOME
-    env["TMPDIR"] = RUN_TMP
-    env["ANSIBLE_LOCAL_TEMP"] = local_tmp
-    env["ANSIBLE_REMOTE_TMP"] = "/tmp"
-    env["ANSIBLE_HOST_KEY_CHECKING"] = "False"
-
-    job_id = new_job_id()
+def launch_job(playbook):
+    job_id = str(int(time.time() * 1000))
+    jdir = JOB_DIR / job_id
+    os.makedirs(jdir, exist_ok=True)
     jp = job_paths(job_id)
-    Path(jp["dir"]).mkdir(parents=True, exist_ok=True)
+    with open(jp["start"], "w") as f:
+        f.write(str(int(time.time())))
+    with open(jp["stdout"], "w") as f:
+        pass
+    proc = subprocess.Popen(
+        ["ansible-playbook", playbook],
+        stdout=open(jp["stdout"], "w"),
+        stderr=subprocess.STDOUT,
+    )
+    with open(jp["rc"], "w") as f:
+        f.write(str(proc.pid))
+    return job_id
 
-    logf = open(jp["log"], "w", buffering=1, encoding="utf-8", errors="replace")
-    try:
-        proc = subprocess.Popen(
-            cmd, stdout=logf, stderr=subprocess.STDOUT, env=env, cwd=Path(playbook_path).parent
-        )
-    except Exception as e:
-        logf.write("Failed: %s\n" % str(e))
-        logf.close()
-        header_ok(); print("<pre>%s</pre>" % safe(str(e))); return
-
-    meta = {"playbook_key": playbook_key, "inventory_key": inventory_key, "hosts": hosts, "pid": proc.pid, "start_ts": int(time.time())}
-    write_json(jp["meta"], meta)
-
-    with open(os.devnull, "wb") as devnull:
-        subprocess.Popen(["bash", "-lc", f"while kill -0 {proc.pid} 2>/dev/null; do sleep 1; done; echo $? > {quote(jp['rc'])}"], stdout=devnull, stderr=devnull)
-
-    header_ok()
-    print(f"<html><head><meta http-equiv='refresh' content='0; URL=?action=watch&job={job_id}'></head><body>Starting...</body></html>")
-
-
-# ---------------- WATCH ----------------
-def render_watch(form):
-    job_id = form.getfirst("job", "")
+def poll_job(job_id, pos):
     jp = job_paths(job_id)
     if not os.path.isdir(jp["dir"]):
-        header_ok(); print("<pre>Unknown job</pre>"); return
-
-    meta = read_json(jp["meta"], {})
+        return {"error": "unknown job"}
+    try:
+        with open(jp["stdout"], "r") as f:
+            f.seek(pos)
+            append = f.read()
+            newpos = f.tell()
+    except FileNotFoundError:
+        append = ""
+        newpos = pos
     rc = None
-    if os.path.exists(jp["rc"]):
+    done = False
+    try:
         with open(jp["rc"], "r") as f:
-            try: rc = int((f.read() or "1").strip())
-            except: rc = 1
+            val = f.read().strip()
+        if val.isdigit():
+            pid = int(val)
+            if not os.path.exists(f"/proc/{pid}"):
+                rc = 0
+                done = True
+        else:
+            rc = int(val)
+            done = True
+    except FileNotFoundError:
+        pass
+    elapsed = 0
+    try:
+        with open(jp["start"], "r") as f:
+            start = int(f.read().strip())
+            elapsed = int(time.time()) - start
+    except:
+        pass
+    return {"pos": newpos, "append": append, "done": done, "rc": rc, "elapsed": elapsed}
+
+def render_index():
+    header_ok()
+    print("<html><head><title>Ansible Playbook CGI Runner</title></head><body>")
+    print("<h1>Run Playbook</h1><ul>")
+    for key, pb in PLAYBOOKS.items():
+        print(f'<li><a href="?action=run&playbook={key}">{html.escape(pb["label"])}</a></li>')
+    print("</ul></body></html>")
+
+def render_watch(form):
+    job_id = form.getfirst("job", "")
+    if not job_id:
+        header_ok(); print("<pre>Missing job id.</pre>"); return
+    jp = job_paths(job_id)
+    if not os.path.isdir(jp["dir"]):
+        header_ok(); print("<pre>Unknown job.</pre>"); return
 
     header_ok()
-    print("<html><head><title>Result</title></head><body><h1>Playbook Result</h1>")
-    with open(jp["log"], "r", encoding="utf-8", errors="replace") as f:
-        print("<h2>Playbook Output</h2><pre>%s</pre>" % safe(f.read()))
+    print("""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Running…</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
+    .card { max-width: 1000px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.05); }
+    .barwrap { height: 8px; background:#eee; border-radius: 999px; overflow:hidden; margin:12px 0 18px; }
+    .bar { width:35%%; height:100%%; background:#0d6efd; animation: indet 1.5s infinite ease-in-out; }
+    @keyframes indet { 0%%{transform:translateX(-100%%)} 50%%{transform:translateX(30%%)} 100%%{transform:translateX(100%%)} }
+    .spinner { width:18px; height:18px; border:3px solid #0d6efd55; border-top-color:#0d6efd; border-radius:50%%; animation: spin .8s linear infinite; display:inline-block; vertical-align:middle; margin-right:8px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    pre { background:#0b1020; color:#d1e7ff; padding:12px; border-radius:8px; white-space:pre-wrap; max-height:520px; overflow:auto; }
+    .muted { color:#666; }
+    .actions { display:flex; gap:12px; margin-top:12px; align-items:center; }
+    .btn { display:inline-flex; align-items:center; justify-content:center; height:40px; padding:0 16px; font-weight:600; font-size:14px; color:#fff; background:#0d6efd; border:0; border-radius:10px; text-decoration:none; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1 id="title"><span class="spinner"></span>Running…</h1>
+    <div class="barwrap"><div class="bar"></div></div>
+    <div class="muted" id="elapsed">Elapsed: 0s</div>
+    <pre id="log">(connecting…)</pre>
+    <div class="actions" id="actions" style="display:none">
+      <a class="btn" href="">Run another</a>
+      <a class="btn" href="?action=list_reports" target="_blank">Browse reports</a>
+      <!-- New report button (hidden until success) -->
+      <a class="btn" id="reportLink" href="#" target="_blank" style="display:none">View HTML Report</a>
+    </div>
+  </div>
+<script>
+  var job = %s;
+  var pos = 0;
+  var done = false;
+  function poll() {
+    if (done) return;
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '?action=poll&job=' + encodeURIComponent(job) + '&pos=' + pos);
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState === 4 && xhr.status === 200) {
+        try {
+          var r = JSON.parse(xhr.responseText);
+          pos = r.pos;
+          document.getElementById('elapsed').textContent = 'Elapsed: ' + r.elapsed + 's';
+          if (r.append) {
+            var pre = document.getElementById('log');
+            pre.textContent += r.append;
+            pre.scrollTop = pre.scrollHeight;
+          }
+          if (r.done) {
+            done = true;
+            document.getElementById('title').textContent = r.rc === 0 ? '✅ SUCCESS' : ('❌ FAILED (rc=' + r.rc + ')');
+            document.querySelector('.barwrap').style.display = 'none';
+            document.querySelector('.spinner').style.display = 'none';
+            document.getElementById('actions').style.display = 'flex';
+            if (r.rc === 0) {
+              // Show link to job-specific report
+              document.getElementById('reportLink').href = '/tmp/www-ansible/tmp/' + job + '/report.html';
+              document.getElementById('reportLink').style.display = 'inline-flex';
+            }
+          } else {
+            setTimeout(poll, 2000);
+          }
+        } catch (e) {
+          setTimeout(poll, 3000);
+        }
+      } else if (xhr.readyState === 4) {
+        setTimeout(poll, 3000);
+      }
+    };
+    xhr.send();
+  }
+  poll();
+</script>
+</body></html>
+""" % json.dumps(job_id))
 
-    # --- Embed latest HTML report if available ---
-    if rc is not None:
-        report = find_latest_report()
-        if report:
-            print(f"<h2>HTML Report</h2>")
-            print(f"<iframe src='file://{report}' width='100%' height='600' style='border:1px solid #ccc;'></iframe>")
-        else:
-            print("<p><em>No HTML report found.</em></p>")
+def render_list_reports():
+    header_ok()
+    print("<html><head><title>Reports</title></head><body>")
+    print("<h1>Reports</h1><ul>")
+    for base in REPORT_BASES:
+        if os.path.isdir(base):
+            for fn in sorted(os.listdir(base), reverse=True):
+                if fn.endswith(".html"):
+                    path = os.path.join(base, fn)
+                    print(f'<li><a href="{html.escape(path)}">{html.escape(fn)}</a></li>')
+    print("</ul></body></html>")
 
-    print("</body></html>")
-
-
-# ---------------- MAIN ----------------
 def main():
     form = cgi.FieldStorage()
-    action = form.getfirst("action", "")
-    if action == "start":
-        start_job(form)
+    action = form.getfirst("action")
+    if action == "run":
+        pbkey = form.getfirst("playbook")
+        if pbkey not in PLAYBOOKS:
+            header_ok(); print("<pre>Unknown playbook.</pre>"); return
+        job_id = launch_job(PLAYBOOKS[pbkey]["path"])
+        header_ok()
+        print(f'<html><body><script>location.href="?action=watch&job={job_id}";</script></body></html>')
     elif action == "watch":
         render_watch(form)
+    elif action == "poll":
+        job_id = form.getfirst("job")
+        pos = int(form.getfirst("pos") or 0)
+        header_json()
+        print(json.dumps(poll_job(job_id, pos)))
+    elif action == "list_reports":
+        render_list_reports()
     else:
-        header_ok(); print("<h1>Runner</h1><form method='post'><input type='hidden' name='action' value='start'/><button>Run</button></form>")
+        render_index()
 
 if __name__ == "__main__":
     main()
