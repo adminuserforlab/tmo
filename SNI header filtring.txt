@@ -1,0 +1,37 @@
+SNI header filting
+
+I have a preliminary question regarding some very large traffic volumes that generate a significant amount of TLS load, which are essentially HTTPS traffic and
+correspond more to infrastructure services than applications at my client Suez (ALOHA 05/06).
+
+Regarding TCP mode operation to avoid a TLS endpoint:
+
+I would like to know, in the very specific case of several sites with multiple certificates:
+
+If we can use filtering based on the SNI header:
+.....................................
+mode tcp
+tcp-request inspect-delay 5s
+tcp-request content accept if { req_ssl_hello_type 1 }
+
+
+I have the following question:
+
+In HTTP mode: is ALOHA the endpoint? So if I define, for example, an ACL on an IP source filter or the HTTP host header,
+I am certain that the ACL is linked to the current HTTP session.
+
+However, with TCP, I wonder if there is a specific context for defining an action on an analysis of the SNI header
+
+. Because at the TCP layer, some packets do not have the SNI header, others do, and therefore, does the ACL have a persistent application context for each TCP packet?
+(since HAProxy forwards TCP packets but no longer analyzes the HTTP application context)^
+
+Fictitious filtering example:
+
+bind 0.0.0.0:443
+mode tcp
+tcp-request inspect-delay 5s
+tcp-request content accept if { req_ssl_hello_type 1 } ### not sure I understand the context of this command
+
+Fictitious example: acl allowed_ips src xyzk
+acl access_exchange req.ssl_sni www.example.exchange.fr
+
+tcp-request content reject if exchange !allowed_ips # reject packet TCP both condition access console and ip not allowed #### yes, but only the SNI packet detected on the correct TCP frame?

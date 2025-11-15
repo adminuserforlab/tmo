@@ -1,0 +1,43 @@
+ 2-4 :Validate name entries in file
+This is the name of the Ansible play (a descriptive label)
+Skips gathering system facts to make execution faster because facts are not needed here.
+
+6-7: VARS
+Defines a variable file_path holding the filename to be read.
+This makes the file path easy to change later.
+
+TASK:
+10-13 : Read lines from file
+slurp reads the entire file and returns the content in base64 encoded form.
+register stores the output in file_content variable for later use
+
+15-17 : Convert file content to list of lines
+file_content.content is base64; b64decode converts it back to plain text.
+.split('\n') breaks the text into a list where each line is one element.
+reject('equalto', '') removes empty lines.
+Stores the final result in variable lines.
+So now lines = list of actual text lines from the file.
+
+19-21 : Debug show line
+Prints the extracted lines for verification during play execution.
+Helpful in troubleshooting but not required for validation logic.
+
+23-25 : Validate lines except lname
+invalid_pattern defines a regex describing characters that are NOT allowed.
+Allowed characters: A-Z, a-z, 0-9, =",
+Any other character is invalid.
+
+27-31 :  Check each line for invalid characters
+For each line:
+Split text into key and value (before and after =).
+Remove extra whitespace from key using trim.
+Remove quotes (" )from the value.
+Validation will NOT apply to lines where the key is lname.
+
+32
+assert: checks the condition.
+
+33-37
+value is not search(invalid_pattern) means: The value must NOT contain any forbidden characters
+Messages displayed if condition passes or fails.
+This runs the validation against every line in the file list.

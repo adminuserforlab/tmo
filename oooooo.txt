@@ -1,0 +1,17 @@
+while trublshoot what i did  i goto this script /opt/hapee-3.2/sbin/hasavelog.directly remove the hardcoded value and give path /var/log/hapee .its working and deleted file but the problem is its i am try to understand why not deledt yestedy log and not create today log.
+
+
+While troubleshooting log rotation issues, I accessed the script at /opt/hapee-3.2/sbin/hasavelog.
+Modified the script by removing the hardcoded path and updated it to point to /var/log/hapee.
+Then i reload daemon-reload and restart hapee-3.2-hasavelog.service ,hapee-3.2-hasavelog.timer
+Verified that the script is now able to delete log files.
+Observed that although the script executed successfully,
+Noticed two issues:
+Yesterday’s log was not deleted.
+Today’s log was not created.
+Currently analyzing the root cause for why previous day logs are not being deleted and new logs are not generated.
+
+Requested the URL package from Adrian, who provided the repository. Currently testing and working with the provided repo.
+
+ACL part 
+Configured ACLs to restrict the admin path so that only a specific source IP is allowed, verified by testing with simple HTML pages from two client VMs, where the authorized client accessed admin successfully and the unauthorized one was denied

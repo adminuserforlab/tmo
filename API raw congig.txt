@@ -1,0 +1,102 @@
+Dataplane API raw configuration: the only_validate option does not use the /etc/haproxy/global.def file
+
+CustomER PROB:
+I'm automating the configuration of our ALOHA servers via the Dataplane API, and I'm encountering a problem.
+
+Here's what I'm trying to do:
+
+- Generate an ALOHA configuration
+- Use the API to verify the configuration
+- Apply the changes if the validation is successful via the API.
+
+The `only_validate` option seems to be exactly what I want to validate the configuration. However, there's an issue during certificate verification. In the `/etc/haproxy/global.def` file, we have these two lines:
+
+`crt-base /var/state/haproxy/certs`
+`ca-base /var/state/haproxy/certs`
+
+Which, if I'm not mistaken, allows just the certificate name to be used instead of the full path.
+
+When we do an only_validate, we get an error that the certificates do not exist, if for example we have this configuration:
+
+frontend front-BU-web-external from univ-http-front
+bind 1.1.1.1:80 name http transparent interface eth1
+bind 1.1.1.1:443 name https crt wildcard_site_fr
+
+{"code":400,"message":"validation error: exit status 1: msg=\"config parsing [/tmp/onlyvalidate793807030:155] 'bind 193.52.99.5:443' in section 'frontend' unable to stat SSL certificate from file 'wildcard_site_fr' No such file or directory.\"\nmsg=\"config Error(s) found in configuration file /tmp/onlyvalidate793807030\"\nmsg=\"config Fatal errors found in configuration.
+
+
+However, when the configuration is pushed and validated (without the only_validate option), the error does not appear and the configuration is correctly applied.
+
+So I added these two lines to the global section of my configuration:
+
+crt-base /var/state/haproxy/certs
+ca-base /var/state/haproxy/certs
+
+And it works when I use only_validate, but it no longer works when I push the configuration because it complains that the two directives are already present:
+
+{"code":400,"message":"validation error: exit status 1: err transactionId=fde3da72-214f-4804-aaaa-2e9ffb372e42 \nmsg=\"config parsing [/app/management/var/lib/dataplaneapi/transactions/haproxy.cfg.fde3da72-214f-4804-aaaa-2e9ffb372e42:99] 'ca-base' already specified.\"\nmsg=\"config parsing [/app/management/var/lib/dataplaneapi/transactions/haproxy.cfg.fde3da72-214f-4804-aaaa-2e9ffb372e42:100] 'crt-base' already specified.\"\nmsg=\"config Error(s) found in configuration file /app/management/var/lib/dataplaneapi/transactions/haproxy.cfg.fde3da72-214f-4804-aaaa-2e9ffb372e42\"\nmsg=\"config Fatal errors found in configuration.\""}
+
+Commands used:
+
+--- Works fine, config applied:
+ALOHA_AUTHTOKEN=TOKEN
+ALOHA_VERSION=$(curl -k -H "Authorization: Basic $ALOHA_AUTHTOKEN" https://IP:6443/v3/services/haproxy/configuration/version | jq .)
+curl -X POST -k -H "Authorization: Basic $ALOHA_AUTHTOKEN" -H "Content-Type: text/plain" --data-binary '@/tmp/fullconfig.conf' https://IP:6443/v3/services/haproxy/configuration/raw?version=$ALOHA_VERSION
+
+
+--- Does not work, error above:
+ALOHA_AUTHTOKEN=TOKEN
+ALOHA_VERSION=$(curl -k -H "Authorization: Basic $ALOHA_AUTHTOKEN" https://IP:6443/v3/services/haproxy/configuration/version | jq .)
+curl -X POST -k -H "Authorization: Basic $ALOHA_AUTHTOKEN" -H "Content-Type: text/plain" --data-binary '@/tmp/fullconfig.conf' " https://IP:6443/v3/services/haproxy/configuration/raw?version=$ALOHA_VERSION&only_validate=true"
+
+I think there's an issue with the API that doesn't validate the configuration in the same way when pushing and when only validating.
+======================================================================================================
+EngR: 
+The /var/state/haproxy/certs directory is used during runtime and concatenates the certificates and private keys of the certificates loaded via the UI in /etc/ssl/frontends/certificate_name, but it's a "Read-only" directory, so you won't be able to store your certificates there anyway.
+========================================================================================================
+ENGr:
+
+Following some internal testing, I can confirm the behavior you observed.
+
+There is a workaround that I believe aligns with the Dataplane API's "philosophy," which is to manage certificates via crt-store objects.
+
+In any case, the following configuration does not return any errors during validation or when pushing the configuration and is compatible with certificate management via the ALOHA Web UI. I will nevertheless escalate your issue to see if we can correct this behavior.
+
+In the meantime, here's an option. Assuming you uploaded a certificate named "wildcard_site_fr" via the Web UI,
+on ALOHA, the certificate and key are stored in two files: /etc/ssl/frontends/wildcard_site_fr/crt.pem and /etc/ssl/frontends/wildcard_site_fr/key.pem, respectively.
+
+Here is a possible configuration compatible with the ALOHA Web UI and Dataplane API, based on a crt-store (section to be created in the configuration): `
+
+crt-store wildcard_site_fr`
+`crt-base /etc/ssl/frontends/wildcard_site_fr/
+` `key-base /etc/ssl/frontends/wildcard_site_fr/` `
+load crt crt.pem` `alias cert key key.pem`
+
+Then adapt your frontend as follows:
+
+`frontend myfront
+bind 1.1.1.1:443 name https crt "@wildcard_site_fr/cert"`
+
+You can add other crt-store sections depending on your configuration, and you can also manage these crt-stores (adding/renewing certificates) via the Dataplane API.
+=========================================================================================================
+PAR:  INcomplete
+Customer using DataPlane API on ALOHA to manage configuration with the /services/haproxy/configuration/raw endpoint
+
+There's an issue with "only_validate=true" option and the certificates when only the certificate name is used (as usually done in Aloha config):
+
+{"code":400,"message":"validation error: exit status 1: msg=\"config parsing [/tmp/onlyvalidate793807030:155] 'bind 193.52.99.5:443' in section 'frontend' unable to stat SSL certificate from file 'wildcard_site_fr' No such file or directory.\"\nmsg=\"config Error(s) found in configuration file /tmp/onlyvalidate793807030\"\nmsg=\"config Fatal errors found in configuration.\""}
+
+But it works when pushing the configuration (without only_validate=true)
+
+Analysis:
+Able to reproduce the behavior in lab environment.
+
+Proposed workaround based on crt-store object that references the Aloha certificates with full path, this works with DPAPI both in push and validation mode.
+
+crt-store wildcard_site_fr
+crt-base /etc/ssl/frontends/wildcard_site_fr/
+key-base /etc/ssl/frontends/wildcard_site_fr/
+load crt crt.pem alias cert key key.pem
+...
+frontend myfront
+bind 1.1.1.1:443 name https crt "@wildcard_site_fr/cert"

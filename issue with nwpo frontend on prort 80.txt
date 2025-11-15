@@ -1,0 +1,69 @@
+We are having an issue with some external connection to frontend for nwpo on port 80.
+From the access log on external Haproxy, when checking some IPs that are having issues I see that Haproxy is denying the traffic.
+Here are more information:
+
+frontend http_nwpo-qa2_10.22.232.183:80 from unnamed_defaults_1
+description nwpo-qa2.newellrubbermaid.com
+bind 10.22.232.183:80 name 10.22.232.183:80
+acl waf_headers var(txn.waf_headers),bool
+acl waf_WAF_Rule_nwpo_qa_drop var(txn.WAF_Rule_nwpo_qa.drop),bool
+acl waf_WAF_Rule_nwpo_qa_block var(txn.WAF_Rule_nwpo_qa.block),bool
+acl waf_WAF_Rule_nwpo_qa_learning var(txn.WAF_Rule_nwpo_qa.learning),bool
+option http-buffer-request
+filter waf WAF_Rule_nwpo_qa rules-file /var/lib/dataplaneapi/storage/waf/WAF_Rule_nwpo_qa/waf_custom.rules learning log
+http-request set-var(txn.waf_headers) always_true
+http-request deny if waf_WAF_Rule_nwpo_qa_drop || waf_WAF_Rule_nwpo_qa_block !waf_WAF_Rule_nwpo_qa_learning
+waf-body http-request deny if waf_headers waf_WAF_Rule_nwpo_qa_drop || waf_headers waf_WAF_Rule_nwpo_qa_block !waf_WAF_Rule_nwpo_qa_learning
+default_backend http_nwpo-qa2
+
+backend http_nwpo-qa2 from unnamed_defaults_1
+description nwpo-qa2.newellrubbermaid.com
+balance source
+acl waf_headers var(txn.waf_headers),bool
+acl waf_WAF_Rule_nwpo_qa_drop var(txn.WAF_Rule_nwpo_qa.drop),bool
+acl waf_WAF_Rule_nwpo_qa_block var(txn.WAF_Rule_nwpo_qa.block),bool
+acl waf_WAF_Rule_nwpo_qa_learning var(txn.WAF_Rule_nwpo_qa.learning),bool
+option http-buffer-request
+timeout server 120000
+filter waf WAF_Rule_nwpo_qa rules-file /var/lib/dataplaneapi/storage/waf/WAF_Rule_nwpo_qa/waf_custom.rules learning log
+http-request set-var(txn.waf_headers) always_true
+http-request deny if waf_WAF_Rule_nwpo_qa_drop || waf_WAF_Rule_nwpo_qa_block !waf_WAF_Rule_nwpo_qa_learning
+waf-body http-request deny if waf_headers waf_WAF_Rule_nwpo_qa_drop || waf_headers waf_WAF_Rule_nwpo_qa_block !waf_WAF_Rule_nwpo_qa_learning
+server dc1nlxprx008 10.22.240.177:80
+server dc1nlxprx009 10.22.240.176:80
+
+
+
+Here are some info from the access log regarding the two Ips that are having issues:
+
+Oct 20 03:27:47 dc1nlxhap006 hapee-lb[9723]: 44.226.68.8 - - [20/Oct/2025:03:27:47 +0000] "POST /AS2/ HTTP/1.1" 403 372 "" "" 49534 386 "http_nwpo-qa2_10.22.232.183:80" "http_nwpo-qa2_10.22.232.183:80" "" 25 -1 -1 -1 25 PR-- 2 1 0 0 0 0 0 "" ""
+
+Oct 20 02:27:46 dc1nlxhap006 hapee-lb[9723]: 44.224.240.12 - - [20/Oct/2025:02:27:46 +0000] "POST /AS2/ HTTP/1.1" 403 372 "" "" 55366 296 "http_nwpo-qa2_10.22.232.183:80" "http_nwpo-qa2_10.22.232.183:80" "" 24 -1 -1 -1 24 PR-- 1 1 0 0 0 0 0 "" ""
+
+============================================
+reply
+
+It might be dropping the request. By default WAF will drop even if it's in learning mode. The easiest thing to try is to update this:
+
+http-request deny if waf_WAF_Rule_nwpo_qa_drop || waf_WAF_Rule_nwpo_qa_block !waf_WAF_Rule_nwpo_qa_learning
+waf-body http-request deny if waf_headers waf_WAF_Rule_nwpo_qa_drop || waf_headers waf_WAF_Rule_nwpo_qa_block !waf_WAF_Rule_nwpo_qa_learning
+
+to this:
+
+http-request deny if waf_WAF_Rule_nwpo_qa_drop !waf_WAF_Rule_nwpo_qa_learning || waf_WAF_Rule_nwpo_qa_block !waf_WAF_Rule_nwpo_qa_learning
+waf-body http-request deny if waf_headers waf_WAF_Rule_nwpo_qa_drop !waf_WAF_Rule_nwpo_qa_learning || waf_headers waf_WAF_Rule_nwpo_qa_block !waf_WAF_Rule_nwpo_qa_learning
+
+That way it won't drop when in learning mode. To confirm this is what is happening I'd need to see the WAF logs. Let me know what you'd like to do.
+
+
+
+
+Here are some entries in the waf log for the IP that is having issues:
+
+Oct 19 22:27:41 dc1nlxhap006 hapee-lb[9723]: WAF: http_nwpo-qa2_10.22.232.183:80/WAF_Rule_nwpo_qa 68F565DD-0A16E8B7005025FB-CDE62 [19/Oct/2025:22:27:41 +0000] ip=44.224.240.12&frontend=http_nwpo-qa2_10.22.232.183:80&backend=http_nwpo-qa2_10.22.232.183:80&uri=/AS2/&learning=1&total_processed=18220&total_blocked=8020&block=1&processing_time=0.023179&threat_level=0.00&zone0=BODY&id0=11&var_name0=&zone1=BODY&id1=20&var_name1=&zone2=BODY&id2=20&var_name2=
+Oct 19 23:27:42 dc1nlxhap006 hapee-lb[9723]: WAF: http_nwpo-qa2_10.22.232.183:80/WAF_Rule_nwpo_qa 68F573EE-0A16E8B7005025FB-CE28E [19/Oct/2025:23:27:42 +0000] ip=44.226.68.8&frontend=http_nwpo-qa2_10.22.232.183:80&backend=http_nwpo-qa2_10.22.232.183:80&uri=/AS2/&learning=1&total_processed=18230&total_blocked=8021&block=1&processing_time=0.023965&threat_level=0.00&zone0=BODY&id0=11&var_name0=&zone1=BODY&id1=20&var_name1=&zone2=BODY&id2=20&var_name2=
+
+I am going to update the frontend per your suggestion, and will let them test again.
+
+http-request deny if waf_WAF_Rule_nwpo_qa_drop !waf_WAF_Rule_nwpo_qa_learning || waf_WAF_Rule_nwpo_qa_block !waf_WAF_Rule_nwpo_qa_learning
+waf-body http-request deny if waf_headers waf_WAF_Rule_nwpo_qa_drop !waf_WAF_Rule_nwpo_qa_learning || waf_headers waf_WAF_Rule_nwpo_qa_block !waf_WAF_Rule_nwpo_qa_learning

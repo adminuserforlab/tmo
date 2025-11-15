@@ -1,0 +1,26 @@
+Custom WAF Block Rule Creation: 
+
+CustomER: Hello, requesting some help constructing a custom WAF block rule. I've read the docs at [1] but am still unsure how to construct a rule for my use case.
+
+Here's a sample log:
+"Oct 31 01:28:06 ALOHA1 local1.err sec-offloader[20105]: WAF-EXT: security_webservice3/main 69047316-0A0A010B01BB01AE-7A816 [31/Oct/2025:01:28:06 -0700] ip=163.61.244.46&frontend=security_webservice3&backend=security_webservice3&host=pilots.up.edu&uri=/c/document_library/find_file_entry&match_id=0&id=12343&zone=ARGS&msg=possible%20injection&var_name=noSuchEntryRedirect&content=https://random-explicit-site.xxx"
+
+Note: All the logs of interest follow the pattern of "uri=/c/document_library/find_file_entry" with "zone=ARGS" and the "var_name=noSuchEntryRedirect" so I'd like to use these 'constants' for the initial rule creation.
+Can you construct a sample rule, please?
+
+=====================================================================================================
+I did this because it gives an example with more options but also because it requires both rules to be triggered to meet the threshold.
+
+--------------------------------------------
+CheckRule "$CUSTTHREAT1 >= 20" BLOCK;
+
+BasicRule "str:/c/document_library/find_file_entry" "msg:path is /c/document_library/find_file_entry" "mz:URL" "s:$CUSTTHREAT1:10" id:80000
+BasicRule "str:noSuchEntryRedirect" "msg:ARG was noSuchEntryRedirect" "mz:ARGS" "s:$CUSTTHREAT1:10" id:80001
+--------------------------------------------
+
+That requires both of those things to be true to trigger on a custom threat type that I setup and it results in this log message when the block happens for WAF:
+
+Oct 31 11:40:21 hapee01.wehrman.com hapee-lb[1515172]: WAF: be_quic/waf_default_ruleset 69050295-AC10160B115B171EA4-0013 [31/Oct/2025:11:40:21 -0700] ip=172.29.1.141&frontend=fe_quic&backend=be_quic&uri=/c/document_library/find_file_entry&learning=1&total_processed=2&total_blocked=2&block=1&processing_time=0.000000&threat_level=1.00&cscore0=$CUSTTHREAT1&score0=20&zone0=URL&id0=80000&var_name0=&zone1=ARGS|NAME&id1=80001&var_name1=noSuchEntryRedirect
+
+You can copy and paste in those rules. Let me know what questions you have.
+======================================================

@@ -1,0 +1,21 @@
+44 err0r
+
+Customer Problem:
+we are observing provisioning requests are getting rejected with 400 HTTP Error response. The issue was investigated with Secure 64 and 6 Connect teams and no errors could be identified on these servers.
+
+Based on the log prints, we could see that the POST request received on PRV server (backend) is chunked and backend provisioning servers are not able to parse the incoming requests and sending 400 Error response
+
+Could you pls check the logs and confirm whether the HAProxy can chunk and incoming SSL traffic when the mode is set to tcp in both the frontend and backend.
+
+==========================================================================================
+Eng rpY: 
+When in tcp mode the proxy is only establishing the connection and passing through the data at that layer. Traffic is just passed encrypted and not modified in anyway. If you wanted to perform any modification you would need to use mode http.
+=============================================
+Problem:
+400 errors after switching from mode http to mode tcp
+
+Analysis:
+server does not handle transfer-encoding: chunked
+
+Resolution:
+put haproxy back in mode http with option http-buffer-request

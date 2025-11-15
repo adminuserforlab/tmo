@@ -1,0 +1,37 @@
+Q/A
+===========================================
+at the moment we are integrating HAProxy Fusion in test environment.
+We are facing the challenge, that alle applications could talk via NodePort, except one (Thingsboard) which needs Ingress.
+For us there are two possible ways:
+
+1. We could have a mixture between automatic integration of services and manual integration of an ingress in HAProxy which forwards all other traffic to Kubernetes NGINX Ingress. In this solution it has to be ensured, that HAProxy takes notice when a worker IP changes.
+2. We are changing everything to Kubernetes nginx ingress and HAProxy only have to monitor which worker are online and update the destination entries for ingress. And forward all data to Kubernetes nginx.
+
+Which way is possible and the right way for using haproxy enterprise?
+===========================================================================
+Short addition: Maybe a HAProxy Ingress Controller is the solution? Could this communicate with HAProxy Loadbalancer Enterprise Edition?
+
+================================================================
+If you are using Fusion the easiest way would be to add a k8s link and Fusion can watch for pod changes and update a backend that is configured in HAProxy Enterprise Edition (HAPEE).
+
+For example, in my lab I have a k8s server running with an apache service that runs 4 pods. My Fusion device watches those pods and creates a backend like this for me:
+
+backend be_name_k8s_link_generated
+mode http
+server xyaz 10.12.17.1:443 check verify none
+server zxcv 10.12.17.2:443 check verify none
+server lwek 10.12.17.3:443 check verify none
+server lwqc 10.12.17.4:443 check verify none
+
+So I have a frontend that I tell to use that backend and this configuration is pushed to my HAEE node and all load balancing is done by HAPEE and all updating is handled automatically by Fusion.
+
+
+
+Thanks,
+
+Nathan Wehrman
+HAProxy Support
+Wienströer, Maik
+Posted on: 28 October 2025 04:21 PM NEW
+Email: maik.wienstroeer@servit.de IP address: 127.0.0.1, 239305
+Short additio

@@ -1,0 +1,28 @@
+Customer replaced their firewall from Cisco ASA to Fortinet FortiGate, the external ADFS servers stopped communicating with the internal servers over the virtual service IP on the load balancer (Aloha/HAProxy). This indicates that traffic from the external network may not be reaching the load balancer or is being blocked / NATed incorrectly.
+
+
+
+
+==========================
+Issue Summary:
+After migrating the firewall from Cisco ASA to Fortinet Fortigate, the customer’s external ADFS servers were unable to communicate with the internal ADFS servers via the virtual service IP on the load balancer.
+
+Analysis:
+The issue likely stems from traffic not reaching the Aloha load balancer or being blocked/altered by the new Fortigate firewall configuration. No logs or traces yet confirm whether packets are arriving at the load balancer.
+
+Next Steps / Solution:
+
+Check Traffic Logs on the Aloha load balancer to verify if traffic is reaching it.
+If no logs are seen, inspect Fortigate rules/NAT settings to ensure traffic flow to the virtual service.
+If traffic is seen but failing, use packet captures on the listener (if needed) for deeper analysis.=================================================================================================================================================
+
+Re-running the script should not cause any issues.It’s advisable to take a snapshot of the VM prior to making any changes, as this will provide a restore point if needed.
+Also, I’ve shared a reference link below that outlines the recommended steps to back up the files beforehand.(This can be skipped if a snapshot is already in place)
+https://customer-docs.haproxy.com/haproxy-fusion/administration/backup/
+
+Additionally, you may use the "-t configure" parameter with the Ansible command to avoid downloading packages. The link I’ve included explains this in more detail.
+https://customer-docs.haproxy.com/haproxy-fusion/getting-started/install/ansible-reference/
+
+Please note that the "-t configure" option is intended only for this specific operation, and it’s recommended not to use it for any future update or upgrade tasks.
+Let me know if you need any help following the steps.===========================================================================================================================================================================================================================
+

@@ -1,0 +1,34 @@
+Modsecurity block request:
+
+
+Problem:
+Modsecurity WAF triggers
+
+UPDATE; now he also comes back on questions about previous redirect issue which no longer works (?)
+
+AFF-130-13807 - https://support.int.haproxy.com/staff/index.php?/Tickets/Ticket/View/97571
+
+Analysis:
+Only one occurence in sec-offloader-traffic (sec-offloader-events do not contain the triggering rule ID, only the "Outbound Anomaly Score Exceeded" message) is for:
+[file "/app/security/usr/share/modsecurity-crs/rules/RESPONSE-953-DATA-LEAKAGES-PHP.conf"]
+[line "84"]
+[id "953120"]
+[uri "/smd-rh-agent/exception/matricule"]
+[unique_id "176010505524.789947"]
+
+'Rx' with parameter '(?:\x1f\x8b\x08|\b(?:(?:i(?:nterplay|hdr|d3)|m(?:ovi|thd)|r(?:ar!|iff)|(?:ex|jf)if|f(?:lv|ws)|varg|cws)\b|gif)|B(?:%pdf|.ra)\b|^wOF[F2])'
+
+[0x1f, 0x8b, 0x08] is the header for a gzip file.
+Réf: https://stackoverflow.com/questions/58552645/what-exactly-is-file-format-that-looks-like-b-x1f-x8b
+
+Meeting on 31/10 : customer OK to Whitelist but they would like to do only for that specific FQDN/
+Since they only have one frontend for multiple backends, and WAF / Modsecurity is used elsewhere, to have th ewhitelist for compressed content only to that backend will need to duplicate the sec-offloader config to create a new filter modsecurity instance with the specific whitelist
+
+Resolution:
+Modify application code or whitelist in safelist.conf:
+SecRule REQUEST_URI "@beginsWith /smd-rh-agent/exception/matricule" "id:104, phase:1,t:none,pass,ctl:ruleRemoveById=953120"
+
+But customer keep asking questions on why it's matching this rule ID since there is no gzip content (compression) ?
+
+Following 31/10 meeting we agreed they will create a new instance of the Modsecurity for that site only
+

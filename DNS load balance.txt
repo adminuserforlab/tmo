@@ -1,0 +1,51 @@
+DNS Load Balance ON ALOHA High latecy
+
+Configuration has been attached - backend DNS servers have normal latency but frontend endpoint has inconsistent latency, up to 5 seconds, for DNS queries.
+
+If you'd like a tcpdump, please provide the command in question.
+
+REply===
+I will take a look to your configuration in a few minutes, in the meantime, would you mind providing us the tcpdump? You can take it by running (from a linux machine with access to the Aloha server):
+# ssh ALOHA_DEVICE sudo tcpdump -i any -l -w - not port 22 > /tmp/aloha-01.pcap
+
+replace:
+- ALOHA_DEVICE by admin@ALOHA_IP (change "admin" by the right user if it is the case)
+
+Relp==
+tcpdump attached, let me know if you need a longer one but I'll need to clear off space on our appliance as it usually is close to maximum storage resources
+
+Reply=====
+
+did something change either in your network or in your Aloha server recently?
+
+In the pcap file, it is possible to see that all the requests are received 3 times by Aloha (160.10.4.9), for example if you filter by:
+- udp.stream eq 717: response takes ~128ms but the request from 160.10.4.9 was received 3 times (see img-001.png for an example)
+for DNS queries (port udp 53) they look pretty similar (I did a random sample with similar results)
+
+For DNS queries to port tcp 53, there a lot of retransmissions, which makes me think of some network issues, you can see this behavious when filtering by
+- tcp.stream eq 63
+This one can explain the reported latency.
+
+How does it look when you ping your Aloha server from another device in the same network segment? for example:
+# ping -c 100 $ALOHA_IP_ADDR_HERE
+
+I think that it could be good to involve your network team (at first, let's ask how does it look the interfaces for this device at switch level)
+
+Reply======
+
+We did update to 17.0.7 recently, but this issue has been occuring before that. The network folks changed out some hardware, but that should affect the load balancers - I attached two screenshots of pings from the same subnet, and there definitely seems to be some instability pinging the load balancer (10.10.5.5) vs the core router (10.10.5.2). Let me know if you need tcpdumps of these pings.
+
+Our network manager has been CC'd on these emails, but I'm not sure how much the switch configurations are going to come into play.
+
+I plan to update the load balancers to ALOHA v17.5.2 tomorrow night unless you advise against it - I was hoping the code changes might resolve our issues in addition to the security patches we're primarily updating for.
+
+RePly========
+
+I've checked the core switches the load balancers are connected to and I see no errors on the ports. Our network folks may have different findings but that's my first impression.
+
+You're correct that we're using a pair of physical appliances (ALOHA 5350s) in VRRP active-passive mode.
+
+Active/master LB tech-support output attached.
+
+
+

@@ -1,0 +1,155 @@
+One of our client is experiencing intermittent 500 errors - 
+out ot a 100 requests 1/2 requests fail with 500 error. We were doing some live testing with them earlier this week, the client sent requests in a stream of 25. The first two streams completed successfully. In the third stream, one request failed. We captured this failure in a tcpdump (attached) along with the client error log (also attached) which indicates an issue during ssl handshake.
+*Client Error Log:*
+```javax.net.ssl.SSLHandshakeException: Remote host terminated the handshake
+Caused by: java.io.EOFException: SSL peer shut down incorrectly```
+Our questions are:
+1. If this is an SSL-related error, why is it not appearing in the HAProxy request explorer?
+2. Could this indicate that the issue is occurring at the TCP layer?
+We would appreciate your help in analyzing the tcpdump and providing guidance on whether the error is HAProxy-related or due to underlying network/SSL handling.
+This client source IP is 3.98.208.173.
+This is how I captured the tcpdump on haproxy :
+sudo tcpdump -s0 -nni any host 209.29.242.144 -vvv -w /var/tmp/$(hostname)-client-handshake.pcap
+test.api.telus.com is using this IP 209.29.242.144 on haproxy.
+
+This is an excellent problem report and probably more in-depth than we can answer over a quick Slack conversation.
+I will convert this to a ticket and start looking at the data.
+
+1. SSL handshake errors do not show in request explorer by default.
+
+We have bug 2748 open for this and there is a workaround. If you add this to a frontend or the defaults section your frontends are using, that will send TLS handshake errors in a format that can be captured in Request Explorer:
+
+error-log-format "%ci:%cp [%t] %ft -/- %Th/%Tw/%Tc/%Tt/%Tu -1 %B \"\" \"\" %ts-- %ac/%fc/%bc/%sc/%rc %sq/%bq {} {} \"TLS /TLS_HANDSHAKE_FAILURE/%{-Q}[ssl_c_ca_err_depth]/ HTTP/1.1\" %[fc_err]/%[ssl_fc_err,hex]/%[ssl_c_err]/%[ssl_c_ca_err]/%[ssl_fc_is_resumed] %[ssl_fc_sni]/%sslv/%sslc"
+
+2. Could this indicate that the issue is occurring at the TCP layer?
+
+Yes. That is very possible. We can't see any handshake failures from that IP in the pcap. It would be more helpful if the Java app could log the TCP source port in use at the time of the failure, then we could filter down the pcap for that port. But since we cannot see it, maybe the failure happens before HAProxy is involved? My recommendation is to log the tcp source port in Java then perform a longer capture to try and collect the failure. You might add more captures, like on the server and haproxy at the same time, just to rule out any packet drops or intermediate modifications.
+
+The ssl logging shows up for all requests in the structured data section of
+our request explorer, you can see it in the example below:
+
+[image: image.png]
+
+When I am trying to search for this client IP filtering on response code
+which is not 200, I do not see anything in the request explorer.
+
+
+we trying to add in an error log format so that if the TLS handshake fails then it would still log to request explorer. Right now only completed handshakes will log which means that if the issue happens before that point then you wouldn't have any logs in Fusion to work with. By adding this in you would then be able to see them. That error-log-format should all be on one line but our email might have split it.
+
+1. SSL handshake errors do not show in request explorer by default.
+
+We have bug 2748 open for this and there is a workaround. If you add this
+to a frontend or the defaults section your frontends are using, that will
+send TLS handshake errors in a format that can be captured in Request
+Explorer:
+
+error-log-format "%ci:%cp [%t] %ft -/- %Th/%Tw/%Tc/%Tt/%Tu -1 %B \"\" \"\" %ts-- %ac/%fc/%bc/%sc/%rc %sq/%bq {} {} \"TLS /TLS_HANDSHAKE_FAILURE/%{-Q}[ssl_c_ca_err_depth]/ HTTP/1.1\"
+%[fc_err]/%[ssl_fc_err,hex]/%[ssl_c_err]/%[ssl_c_ca_err]/%[ssl_fc_is_resumed]
+%[ssl_fc_sni]/%sslv/%sslc"
+
+
+I made an update to the logging configuration to include the
+error-log-format as per Daniel's recommendation. The new log format is now
+being displayed in the HAPEE system logs, and we can now see entries such
+as:
+
+sdf-test-api-telus-com~ -/- 27/-1/-1/27/27 -1 0 "" "" PR--
+111/21/0/0/0 0/0 {} {}
+"TLS/TLS_HANDSHAKE_FAILURE/0/HTTP/1.1" 21_err/0000000000000000/0/0/1
+-/TLSv1.2/ECDHE-RSA-AES256-GCM-SHA384
+
+After implementing the change, the client performed another round of
+testing using the test.api.telus.com endpoint. We reviewed the HAPEE logs
+during their test window but did not observe any TLS or SSL handshake
+failures associated with their client IP — even with the enhanced logging
+in place.
+
+In addition, we noticed that the new log entries with the updated
+error-log-format are still not visible in the Fusion UI (Request Explorer).
+Is this expected? If I understood correctly, the error-log-format
+workaround was meant to address the fusion bug where SSL handshake errors
+did not appear in the request explorer.
+
+I would switch that to https so that you can see more TLS information from clients in the request explorer. That should not cause problems unless you have other httpCLF related settings in Config Edit.
+
+We had an extensive troubleshooting session for this issue with our network
+and client teams - including load testing, firewall log review, and packet
+capture analysis. Our observations suggest the resets are occurring at the
+TCP layer, before connections reach haproxy.
+
+We are reaching out for guidance regarding intermittent TCP resets observed
+in our HAPEE VMs which is currently running on Oracle Linux 9.5.
+
+Summary of Findings:
+
+-
+
+The issue is reproducible during load testing, though infrequent.
+-
+
+Firewall logs show *“TCP Reset from Server”* events with *very small
+byte sizes (<900 bytes)* and *0-second duration*, indicating that the
+resets occur almost instantaneously.
+-
+
+These failed sessions do *not appear in HAProxy or Fusion logs*,
+implying the connections terminate before being handled by HAProxy.
+-
+
+*Packet captures* confirm that the resets occur within microseconds,
+sometimes even before the full three-way handshake completes.
+-
+
+The issue only affects a specific domain in the QA environment; traffic
+routed through F5 infrastructure does not exhibit the same behavior.
+
+Request for Guidance:
+
+Given that the connections appear to reset before reaching HAProxy, we
+would appreciate your input on:
+
+1.
+
+Which *TCP or system-level parameters* (e.g., kernel or socket tuning)
+we should review or adjust for the hapees? I have posted below the current
+tcp setting on our HAPEE VM.
+2.
+
+Whether HAProxy Enterprise has any *recommended baseline TCP tuning
+values or best practices* for optimizing stability under moderate load?
+
+This is the screenshot of the specific tcp stream with the reset, which we
+were able to identify using the source port captured on the firewall which
+routes traffic to haproxy.
+
+You can find our recommended sysctls in the file /etc/sysctl.d/30-hapee-3.0.conf. These are all commented out by default so that you can review and enable them if needed. For your issue, I think these stand out as the most helpful:
+
+# Increase the TCP SYN backlog size. This is generally required to support very
+# high connection rates as well as to resist SYN flood attacks. Setting it too
+# high will delay SYN cookie usage though. Defaults: 1024
+#
+# net.ipv4.tcp_max_syn_backlog = 60000
+
+# Serves as a higher bound for all of the system's SYN backlogs. Put it at
+# least as high as tcp_max_syn_backlog, otherwise clients may experience
+# difficulties to connect at high rates or under SYN attacks. Default: 128
+#
+# net.core.somaxconn = 60000
+
+As part of our recent tuning efforts, we applied the following changes:
+
+*1. File descriptor limits (/etc/security/limits.conf):*
+
+* soft nofile 65535* hard nofile 1048576
+
+*2. TCP-level settings (created hapee-3.0-sdf.conf):*
+
+net.ipv4.tcp_max_syn_backlog = 60000net.ipv4.tcp_fin_timeout =
+30net.ipv4.tcp_synack_retries = 3net.ipv4.ip_nonlocal_bind =
+1net.ipv6.ip_nonlocal_bind = 1net.core.somaxconn =
+60000net.core.netdev_max_backlog = 10000
+
+However, our clients are still seeing the 500 connection resets.
+
+We would like to add someone from your side to the next troubleshooting
+session. Can you please let me know who I could forward the invite to?

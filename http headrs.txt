@@ -1,0 +1,291 @@
+HTTP header---------------
+
+Currently we have a frontend in TCP mode which redirects the flow to ingress controllers of my KUB cluster. Is it possible to tell HAproxy to block all incoming requests which do not have correct http headers?
+===============================================================================================================================================================
+(issue chat start from bottom)
+
+Stephane, have you tried with Vincent's instructions?
+
+
+If your traffic is in HTTPS, you can add strict-sni on your bind line:
+bind :443 ssl crt ... strict-sni
+A request to a domain for HAProxy that does not have a certificate will be rejected at the TLS negotiation.
+
+And for HTTP traffic, indeed the ACL "hdr(host) -i host1.example.com host2.example.com" will block them
+
+
+
+Rafael Angarita | Systems Engineer
+HAProxy Technologies www.haproxy.com
+Stephane Clouaire
+Posted on: October 28, 2025 06:45 PM  NEW
+Email: stephane.clouaire@acri-st.fr
+here is the L7 conf:
+
+######## Default values ​​for all entries till next defaults section
+defaults
+option dontlognull # Do not log connections with no requests
+option redispatch # Try another server in case of connection failure
+option contstats # Enable continuous traffic statistics updates
+retries 3 # Try to connect up to 3 times in case of failure
+timeout connect 5s # 5 seconds max to connect or to stay in queue
+timeout http-keep-alive 1s # 1 second max for the client to post next request
+timeout http-request 15s # 15 seconds max for the client to send a request
+timeout queue 30s # 30 seconds max queued on load balancer
+timeout tarpit 1m # tarpit hold tim
+backlog 10000 # Size of SYN backlog queue
+
+backend backend_prod
+balance roundrobin #alctl: load balancing algorithm
+mode tcp #alctl: protocol analyzer
+log global #alctl: log enable
+tcplog option #alctl: log format
+default-server inter 3s rise 2 fall 3 #alctl: default check parameters
+timeout server 300s #alctl: server inactivity timeout
+log global #alctl: log activation
+log global #alctl: log activation
+server vrorke211020 10.91.11.20:443 maxconn 1000 weight 10 check #alctl: server vrorke211020 setup.
+server vrorke211021 10.91.11.21:443 maxconn 1000 weight 10 check #alctl: server vrorke211021 configuration.
+server vrorke211022 10.91.11.22:443 maxconn 1000 weight 10 check #alctl: server vrorke211022 configuration.
+
+frontend frontend_prod
+bind 10.91.11.154:443 name frontendprod crt default #alctl: listener frontendprod configuration.
+tcp mode #alctl: protocol analyzer
+log global #alctl: log activation
+option tcplog #alctl: log format
+client timeout 300s #alctl: client inactivity timeout
+maxconn 1000 #alctl: connections maximum
+default_backend backend_prod #alctl: default farm to use
+
+backend backend_prod_private
+balance leastconn #alctl: load balancing algorithm
+mode tcp #alctl: protocol analyzer
+log global #alctl: log activation
+option tcplog #alctl: log format
+default-server inter 3s rise 2 fall 3 #alctl: default check parameters
+timeout server 300s #alctl: server inactivity timeout
+server vrohwrke2011055 10.91.11.55:443 maxconn 1000 weight 10 check #alctl: server vrohwrke2011055 configuration.
+server vrohwrke2011054 10.91.11.54:443 maxconn 1000 weight 10 check #alctl: server vrohwrke2011054 configuration.
+
+frontend frontend_prod_private
+bind 10.91.11.155:443 name frontendprodprivate crt default #alctl: listener frontendprodprivate configuration.
+tcp mode #alctl: protocol analyzer
+log global #alctl: log activation
+option tcplog #alctl: log format
+client timeout 300s #alctl: client inactivity timeout
+maxconn 1000 #alctl: connections maximum
+default_backend backend_prod_private #alctl: default farm to use
+
+frontend frontend_prod_80
+bind 10.91.11.154:80 name frontend_prod_80 crt default #alctl: listener frontend_prod_80 configuration.
+mode tcp #alctl: protocol analyzer
+log global #alctl: log activation
+option tcplog #alctl: log format
+client timeout 300s #alctl: client inactivity timeout
+maxconn 1000 #alctl: connections maximum
+default_backend backend_prod-80 #alctl: default farm to use
+
+backend backend_prod-80
+balance leastconn #alctl: load balancing algorithm
+mode tcp #alctl: protocol analyzer
+log global #alctl: log activation
+option tcplog #alctl: log format
+default-server inter 3s rise 2 fall 3 #alctl: default check parameters
+timeout server 300s #alctl: server inactivity timeout
+server vrorke211020 10.91.11.20:80 maxconn 1000 weight 10 check #alctl: server vrorke211020 configuration.
+server vrorke211021 10.91.11.21:80 maxconn 1000 weight 10 check #alctl: server vrorke211021 configuration.
+server vrorke211022 10.91.11.22:80 maxconn 1000 weight 10 check #alctl: server vrorke211022 configuration.
+
+
+
+Rafael Angarita  (Staff)
+Posted on: October 28, 2025 06:33 PM  NEW
+Email: rangarita@haproxy.com IP address: 127.0.0.1, 239341
+Hello Giovanni,
+
+Can you try with:
+
+---
+frontend htm-623-97916
+mode tcp
+bind 192.168.20.166:24980 name 192.168.20.166:24980
+acl invalid_src req.hdr(Host),field(1,:) -m reg \b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b
+http-request deny if invalid_src
+...
+---
+
+Test:
+$ grep ds.domaine.eu /etc/hosts
+192.168.20.166 ds.domaine.eu
+
+$ curl -I http://192.168.20.166:24980
+HTTP/1.1 403 Forbidden
+content-length: 93
+cache-control: no-cache
+content-type: text/html
+
+$ curl -I http://ds.domaine.eu:24980
+HTTP/1.1 200 OK
+date: Tue, 28 Oct 2025 18:32:04 GMT
+server: Apache/2.4.52 (Ubuntu)
+vary: Accept-Encoding
+content-type: text/html; charset=UTF-8
+
+
+
+
+Rafael Angarita | Systems Engineer
+HAProxy Technologies www.haproxy.com
+Vincent Riquer  (Staff)
+Posted on: October 28, 2025 05:37 PM  NEW
+Email: vriquer@haproxy.com IP address: 127.0.0.1, 239335
+If your traffic is HTTPS, you can add strict-sni to your bind line:
+bind :443 ssl crt ... strict-sni
+A request to a domain for HAProxy that does not have a certificate will be rejected at TLS negotiation.
+
+And for HTTP traffic, the ACL "hdr(host) -i host1.example.com host2.example.com" will indeed block them
+
+Best regards,
+Vincent R
+HAProxy Technologies
+Giovanni Corato
+Posted on: October 28, 2025 05:31 PM  NEW
+Email: giovanni.corato@adwaiseo.eu
+The goal is to set up an ACL that blocks all requests made directly that use the public IP address and not the domains.
+
+For example:
+- https://51.110.38.5 blocked and ds.domaine.eu allowed.
+
+
+Kind regards | Best regards | Schéi Gréiss | With kind regards
+
+Giovanni Corato, PhD
+Chief Technology Officer
+adwäisEO
+11, rue Pierre Werner
+L-6832 Betzdorf
+Luxembourg
+
+Tel: +352 26 71 04 64
+Mob: +352 621 408 846
+Email:   giovanni.corato@adwaiseo.eu
+Web:  www.adwaiseo.eu
+
+-
+Vincent Riquer  (Staff)
+Posted on: October 28, 2025 04:24 PM  NEW
+Email: vriquer@haproxy.com IP address: 127.0.0.1, 239309
+A priori yes, if you attach the layer7 config to the ticket I can be sure.
+
+Best regards,
+Vincent R
+HAProxy Technologies
+Stephane Clouaire
+Posted on: October 28, 2025 04:22 PM  NEW
+Email: stephane.clouaire@acri-st.fr
+Ok thanks for the info so all the urls that are not in the list "hdr(host) -i host1.example.com host2.example.com" will be blocked?
+Did I understand correctly?
+Regards
+stephane
+
+
+-----Original message-----
+From: HAProxy Support
+Sent: Tuesday, October 28, 2025 4:43 PM
+To: Stephane Clouaire
+Cc: ACRI-ST # [digital]-service IT ; Giovanni Corato
+Subject: [#HTM-623-97916]: http header
+
+What do you mean by "known header"? Do you mean the Host header? You can test the host header in both TCP and HTTP mode:
+http-request deny if !{ hdr(host) host1.example.com host2.example.com }
+
+Any request that does not have a host header matching host1.example.com or host2.example.com.
+
+Can you provide me with your LB Layer7 configuration, so I can see exactly what can be done and how?
+
+Best regards,
+Vincent R
+HAProxy Technologies
+
+
+Ticket Details
+---------------------------------
+Ticket ID: HTM-623-97916
+Department: HAProxy Support
+Type: Informational
+Vincent Riquer  (Staff)
+Posted on: October 28, 2025 03:43 PM  NEW
+Email: vriquer@haproxy.com IP address: 127.0.0.1, 239288
+What do you mean by "known header"? Do you mean the Host header? You can test the host header in both TCP and HTTP mode:
+http-request deny if !{ hdr(host) host1.example.com host2.example.com }
+
+Any request that does not have a host header matching either host1.example.com or host2.example.com.
+
+Can you provide me with your LB Layer7 configuration, so I can see exactly what can be done and how?
+
+Best regards,
+Vincent R
+HAProxy Technologies
+Stephane Clouaire
+Posted on: October 28, 2025 03:25 PM  NEW
+Email: stephane.clouaire@acri-st.fr
+Hello
+
+In http mode, what would be the config to allow requests only for known headers e.g. prip.highway.eu and prohibit the rest?
+Regards,
+Stephane
+
+-----Original message-----
+From: HAProxy Support
+Sent: Tuesday, October 28, 2025 3:11 PM
+To: Stephane Clouaire
+Cc: ACRI-ST # [digital]-service IT
+Subject: [#HTM-623-97916]: http header
+
+Hello Stéphane,
+
+In tcp mode, it is possible to retrieve and examine headers, but the overall syntax of the request will not be checked.
+
+For example:
+frontend tcp_fe
+mode tcp
+bind :80
+tcp-request inspect-delay 5s # required to analyze the request before forwarding it
+http-request deny if {req.hdr(my-header) } !{ req.hdr(my-header) -m reg "[A-z0-9_-]*" }
+
+will reject any request that has the "my-header" header set but contains illegal characters.
+
+To reject any invalid request, it is necessary to switch the proxy to http mode, non-compliant requests will be rejected with a 400 error automatically.
+
+Best regards,
+Vincent R
+HAProxy Technologies
+
+
+Ticket Details
+---------------------------------
+Ticket ID: HTM-623-97916
+Department: HAProxy Support
+Type: Informational
+Vincent Riquer  (Staff)
+Posted on: October 28, 2025 02:11 PM
+Email: vriquer@haproxy.com IP address: 127.0.0.1, 239247
+Hello Stéphane,
+
+In tcp mode, it is possible to retrieve and examine headers, but the overall syntax of the request will not be checked.
+
+For example:
+frontend tcp_fe
+mode tcp
+bind :80
+tcp-request inspect-delay 5s # required to analyze the request before forwarding it
+http-request deny if {req.hdr(my-header) } !{ req.hdr(my-header) -m reg "[A-z0-9_-]*" }
+
+will reject any request with the "my-header" header defined but containing forbidden characters.
+
+To reject any incorrect request, it is necessary to switch the proxy to http mode, non-compliant requests will be rejected with a 400 error automatically.
+
+Best regards,
+Vincent R
+HAProxy Technologies
+

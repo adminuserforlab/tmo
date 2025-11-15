@@ -1,0 +1,177 @@
+High latency introduced at haproxy
+
+We are using HA Proxy behind F5 LB as Layer 7 with map files to read headers and make pool selection.
+F5 LB is only for SSL termination and then sending the traffic to HA Proxy.
+The Application latency is only for one of the legacy applications which uses Genuine channels RPC calls from client to server, client uses a thick client application
+in their desktop to login and connect to the server in the Datacenter behind the F5 and HA Proxy.
+Nature of the Application latency - If the client is having e.g. 100ms network latency, then Application latency will be generally double 200ms, but after adding HA Proxy, it is going almost double of expected 400ms
+Application is little chatty and opens several tcp connections per client.
+As a workaround we enabled oneconnect on the F5 which reduced the number of TCP connections to the HA Proxy and fixed the issue with the HA Proxy.
+
+Would like to know why we are getting so high latency at the HA Proxy layer (without oneconnect enabled on F5).
+Let us know if you need more details, config below:
+
+#---------------------------------------------------------------------
+
+#common defaults that all the 'listen' and 'backend' sections will
+
+#use if not designated in their block
+
+#---------------------------------------------------------------------
+global
+tune.bufsize 65536
+
+defaults
+mode http
+log global
+option httplog
+option dontlognull
+option http-server-close
+option redispatch
+retries 3
+timeout http-request 180s
+timeout queue 1m
+timeout connect 300s
+timeout client 180s
+timeout server 180s
+timeout http-keep-alive 237s
+timeout check 10s
+maxconn 3000
+load-server-state-from-file global
+
+#---------------------------------------
+# Read-only stats dashboard over TCP
+#---------------------------------------
+listen stats
+bind *:9000 # Update port per app if stats are needed for the app
+mode http
+stats enable
+stats uri /haproxy-stats
+stats hide-version
+stats show-node
+# NO admin UI/actions over HTTP
+stats admin if FALSE
+acl allowed_methods method GET HEAD
+acl is_stats_path path -i /haproxy-stats
+http-request deny if !allowed_methods
+http-request deny if !is_stats_path
+http-response set-header X-Content-Type-Options nosniff
+http-response set-header X-Frame-Options DENY
+http-response set-header Referrer-Policy no-referrer
+#--------------------------------------------------------------------
+
+frontend main
+bind *:8080
+option http-server-close
+stats uri /haproxy?stats
+capture request header x-correlation-id len 40
+capture request header cookie len 64
+acl ACL_ebs-int hdr(host) -i encplat-pod1.int1.ice.com
+acl ACL_ebs-uat hdr(host) -i encplat.uat1.ice.com
+use_backend %[path,map_sub(/var/opt/haproxy/ebs/conf/maps/route_int.map,default_int)] if ACL_ebs-int
+use_backend %[path,map_sub(/var/opt/haproxy/ebs/conf/maps/route_uat.map,uat-poolv1)] if ACL_ebs-uat
+
+backend default_int
+mode http
+balance leastconn
+stats enable
+server m4s-i1-hba-01.intcx.net 10.42.47.92:80 check
+server m4s-i1-hba-02.intcx.net 10.42.47.93:80 check
+
+backend default_uat
+mode http
+balance leastconn
+stats enable
+server m4s-u1-hba-01.intcx.net 10.42.53.49:80 check
+server m4s-u1-hba-02.intcx.net 10.42.53.50:80 check
+
+backend int-poolv1
+mode http
+balance leastconn
+stats enable
+server m4s-i1-hba-01.intcx.net 10.42.47.92:80 check
+server m4s-i1-hba-02.intcx.net 10.42.47.93:80 check
+server m4s-i1-hba-07.intcx.net 10.42.60.135:80 check
+server m4s-i1-hba-08.intcx.net 10.42.60.136:80 check
+server m4s-i1-hba-09.intcx.net 10.42.60.143:80 check
+option httpchk
+option httplog
+#http-check send meth HEAD uri / ver HTTP/1.1\r\nHost:\ localhost
+http-check send meth GET uri /EncompassPlatformAPI/lifecheck ver HTTP/1.1 hdr Host localhost
+http-check expect status 200
+
+
+backend int-poolv3-sf
+mode http
+balance leastconn
+stats enable
+cookie WS-HOST-TOKEN insert nocache secure httponly
+server s5 10.42.47.103:80 cookie s5 check
+server s6 10.42.47.104:80 cookie s6 check
+option httpchk
+option httplog
+#http-check send meth HEAD uri / ver HTTP/1.1\r\nHost:\ localhost
+http-check send meth GET uri /EBS.StatefulApi/v3/lifecheck ver HTTP/1.1 hdr Host localhost
+http-check expect status 200
+
+
+backend int-poolv3-sl
+mode http
+balance leastconn
+stats enable
+server m4s-i1-hba-03.intcx.net 10.42.47.101:80 check
+server m4s-i1-hba-04.intcx.net 10.42.47.102:80 check
+option httpchk
+option httplog
+#http-check send meth HEAD uri / ver HTTP/1.1\r\nHost:\ localhost
+http-check send meth GET uri /EBS.WebApi/v3/lifecheck ver HTTP/1.1 hdr Host localhost
+http-check expect status 200
+
+
+backend uat-poolv1
+mode http
+balance leastconn
+stats enable
+server m4s-u1-hba-01.intcx.net 10.42.53.49:80 check
+server m4s-u1-hba-02.intcx.net 10.42.53.50:80 check
+server m4s-u1-hba-03.intcx.net 10.42.53.5:80 check
+server m4s-u1-hba-05.intcx.net 10.42.53.66:80 check
+server m4s-u1-hba-06.intcx.net 10.42.53.28:80 check
+server m4s-u1-hba-07.intcx.net 10.42.53.59:80 check
+server m4s-u1-hba-08.intcx.net 10.42.53.139:80 check
+server m4s-u1-hba-09.intcx.net 10.42.53.142:80 check
+server m4s-u1-hba-10.intcx.net 10.42.53.141:80 check
+server m4s-u1-hba-11.intcx.net 10.42.53.137:80 check
+server m4s-u1-hba-12.intcx.net 10.42.53.95:80 check
+server m4s-u1-hba-13.intcx.net 10.42.53.70:80 check
+server m4s-u1-hba-14.intcx.net 10.42.53.138:80 check
+server m4s-u1-hba-15.intcx.net 10.42.53.119:80 check
+option httpchk
+http-check send meth HEAD uri / ver HTTP/1.1\r\nHost:\ localhost
+
+backend uat-poolv3-sf
+mode http
+balance leastconn
+stats enable
+# Cookie persistence for testing
+cookie WS-HOST-TOKEN insert preserve nocache httponly
+# Capture and echo back Cookie header
+http-request set-var(txn.original_cookie) req.hdr(Cookie)
+http-response set-header Set-Cookie %[var(txn.original_cookie)] if { var(txn.original_cookie) -m found }
+server u3 10.42.53.146:80 check cookie u3
+server u4 10.42.53.101:80 check cookie u4
+server u5 10.42.53.144:80 check cookie u5
+option httpchk
+http-check send meth HEAD uri / ver HTTP/1.1\r\nHost:\ localhost
+
+backend uat-poolv3-sl
+mode http
+balance leastconn
+stats enable
+server m4s-u1-hba-16.intcx.net 10.42.53.82:80 check
+server m4s-u1-hba-19.intcx.net 10.42.53.136:80 check
+server m4s-u1-hba-20.intcx.net 10.42.53.27:80 check
+server m4s-u1-hba-21.intcx.net 10.42.53.143:80 check
+server m4s-u1-hba-22.intcx.net 10.42.53.145:80 check
+option httpchk
+http-check send meth HEAD uri / ver HTTP/1.1\r\nHost:\ localhost

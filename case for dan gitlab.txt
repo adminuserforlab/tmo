@@ -1,0 +1,20 @@
+Ticket 1: Client (Alternar)   Ower: Grant Duke
+Reques exploere not shwing old data :
+Requested information to see data older than 1 day in the Request Explorer, they rerun Ansible script to have retention of 14 days
+
+Confirmed that /etc/fusion/fusion-controlplane.yml contains data_retention_days: 14 yet data is still not being displayed past data as expected
+
+Analysis :The issue is around clickhouse table settings, since the retention is enforced internally by CH. Since currently tables are created with relevant expiry settings only if they don't exist, changing the settings in the fusion config file
+
+manually change the TTL on access_logs there 2 cases
+
+clickhouse is single host mode
+clickshouse is in cluster mode
+
+Note: In case you reduce the TTL.
+The data will not be wiped right away. Clikhouse will eventually do it, but you can also force by optimizing the table. Warning Optimazing the table is a costly operation.
+
+================================================================================================================
+Ticket 2: client ((CHU Bordeaux)
+
+

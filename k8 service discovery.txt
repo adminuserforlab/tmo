@@ -1,0 +1,23 @@
+K8s Link for Service Discovery
+
+We've had a K8 cluster connected to fusion for some time. We are now getting errors about permissions, but service discovery seems to continue to work.
+
+This is the error in the GUI. Where can we get more detailed information? logs?
+
+Inactive{"Code":{"Code":"Forbidden","Status":403},"Message":"clusters.management.cattle.io \"c-m-8wk8zcgv\" is forbidden: User \"system:unauthenticated\" cannot get resource \"clusters\" in API group \"management.cattle.io\" at the cluster scope","Cause":null,"FieldName":""}cannot retrieve Kubernetes version
+
+========================================================================================================
+Problem
+Fusion-controlplane logs show an error related to kubernetes
+
+Analysis
+They have 5 k8s links. Only one has this error. That link is not working. The troublesome part is that we cannot tell from this error which link is failing.
+
+Oct 27 06:54:37 fusion-01 fusion-controlplane[1206453]: W1027 06:54:37.392337 1206453 reflector.go:547] pkg/mod/k8s.io/client-go@v0.30.0/tools/cache/reflector.go:232: failed to list *v1.Service: {"Code":{"Code":"Forbidden","Status":403},"Message":"clusters.management.cattle.io \"c-m-zk9jjbrk\" is forbidden: User \"system:unauthenticated\" cannot get resource \"clusters\" in API group \"management.cattle.io\" at the cluster scope","Cause":null,"FieldName":""} (get services)
+
+Seems to be for K8s link lv-stg-b2c-c1
+
+Next steps
+Fix the k8s link lv-stg-b2c-c1 settings or remove it from Fusion
+
+Rsolve : update to DEV team

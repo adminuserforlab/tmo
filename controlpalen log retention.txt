@@ -1,0 +1,113 @@
+I figured out that port 9000 for logs was coming from the default setting for fusion_controlplane_logs_database_port: so I added
+fusion_controlplane_logs_database_port: 9440
+and
+fusion_controlplane_logs_database_retention: 7
+to my myvariables.ini
+
+Ran the deb installer, ran the Ansible playbook, and after the service restart nothing came back.
+
+Getting this error
+
+
+systemctl status clickhouse-server.service------
+Loaded: loaded (/lib/systemd/system/clickhouse-server.service; enabled; vendor preset: enabled)
+Active: active (running) since Fri 2025-11-14 12:29:58 UTC; 26min ago
+Main PID: 107877 (clickhouse-serv)
+Tasks: 744 (limit: 14300)
+ov 14 12:29:56 c4z-np-hafus-01 clickhouse-server[107876]: Merging configuration file '/etc/clickhouse-server/config.d/settings.xml'.
+Nov 14 12:29:56 c4z-np-hafus-01 clickhouse-server[107876]: Merging configuration file '/etc/clickhouse-server/config.d/z_log_disable.xml'.
+Nov 14 12:29:56 c4z-np-hafus-01 clickhouse-server[107876]: Merging configuration file '/etc/clickhouse-server/config.d/zookeeper.xml'.
+Nov 14 12:29:56 c4z-np-hafus-01 clickhouse-server[107876]: Logging warning to /var/log/clickhouse-server/clickhouse-server.log
+Nov 14 12:29:56 c4z-np-hafus-01 clickhouse-server[107876]: Logging errors to /var/log/clickhouse-server/clickhouse-server.err.log
+Nov 14 12:29:56 c4z-np-hafus-01 systemd[1]: clickhouse-server.service: Supervising process 107877 which is not our child. We'll most likely not notice when it exits.
+Nov 14 12:29:58 c4z-np-hafus-01 systemd[1]: Started ClickHouse Server (analytic DBMS for big data).
+Nov 14 12:30:14 c4z-np-hafus-01 systemd[1]: clickhouse-server.service: Supervising process 107877 which is not our child. We'll most likely not notice when it exits.
+Nov 14 12:30:31 c4z-np-hafus-01 systemd[1]: clickhouse-server.service: Supervising process 107877 which is not our child. We'll most likely not notice when it exits.
+==============================
+can we check the clickhouse version ?
+```dpkg --list | grep click```
+13:06:40 @pbonnat: Also I would like to have the whole ansible logs (with the command you ran) and the myvariables.ini (password aren't needed)
+13:09:40 @peter.clark: ii python3-click 8.1.6-2 all Wrapper around optparse for command line utilities - Python 3.x
+==========================================
+myvay.yml
+fusion_controlplane_version: "1.3"
+hapee_subscription_key:
+fusion_controlplane_database_password:
+timescaledb_replication_password:
+timescaledb_rewind_password:
+clickhouse_user: fusion
+clickhouse_password:
+timescaledb_superuser_password:
+consul_encrypt_key: fj79u5gcZA0spxcUj0z6w/RO0hhHadAyKfGVfExeefo=
+fusion_controlplane_skip_default_waf_resources: true
+requirements_profile: min
+fusion_controlplane_tls_certificate: /home/ubuntu/wildcard.intcx.net.crt
+fusion_controlplane_tls_key: /home/ubuntu/wildcard.intcx.net.key
+clickhouse_force_setup: true
+fusion_controlplane_logs_database_retention: 7
+===================================================
+dpkg --list | grep click                                                                            ****************same on 3 nodes
+ii clickhouse-client 24.1.5.6 amd64 Client binary for ClickHouse
+ii clickhouse-common-static 24.1.5.6 amd64 Common files for ClickHouse
+ii clickhouse-server 24.1.5.6 amd64 Server binary for ClickHouse
+ii python3-click 8.0.3-1 all Wrapper around optparse for command line utilities - Python 3.x
+ii rsyslog-omclickhouse 8.2408.0-0adiscon3jammy1 amd64 Provides the omclickhouse rsyslog plugin
+=============================
+fusion version
+fusion-deploy v1.3.18
+======================
+  I think it's because you have different values on retention day between clickhouse config and clickhouse db
+ we can rebuild the clickhouse keeper but you will loose request explorer data.
+the fix will be to run those command on all nodes sequentially on each nodes:
+`sudo systemctl stop fusion*-*controlplane`
+`sudo systemctl stop clickhouse*-*server`
+`run rm *-*rf */*var*/*lib*/*clickhouse*/**`
+`systemctl start clickhouse*-*server`
+once clickhouse up
+`sudo systemctl start fusion-controlplane`
+ still failing to launch
+ can you rerun the playbook please
+ok, control plane is back up but I still have some issues
+
+1st one, probably the easiest, my nodes are hapee-2.9. It doesn't show up in the list after doing an upgrade (manually editing fusion-config.xml last times IIRC above;
+fusion_controlplane_hapee_additional_versions: hapee-2.9 
+Yes you can add `fusion_controlplane_hapee_additional_versions: ["3.0r1", "2.8r1", "2.9r1"]`
+re-run playbook
+you can disable `clickhouse_force_setup: true` also if clickhouse is ok
+while that's cooking, issue number 2 is that I don't get logs from the nodes any more. apparently they're defaulting to port 9000 in this version;
+ it was running on port 9443 w/ TLS before, but every upgrade overwrites that back to 9000.
+fusion_controlplane_logs_database_port should be set
+ i tried updating it to port 9443 with the log_ports line but it crashed the system.
+also, post-upgrades it's now listing the Fusion nodes as the only valid source IPs for connections to the clickhouse-server
+=========================================================
+more /etc/clickhouse-server/users.d/user_fusion.xml
+ I do edit the happee node to tls=yes and the 9443 port that was being used before, it refuses the connections
+: adding the extras line hasn't helped with the hapee-2.9 thing;
+fusion_controlplane_hapee_additional_versions: ["2.4r1", "2.6r1", "2.7r1", "2.8r1", "2.9r1"]
+having only fusionIP node their is normal
+ for changing the port you need to set `fusion_controlplane_logs_database_port` as variable
+ ok, let's try that again. any thoughts about 2.9 requiring manual editing
+====================================
+sudo patronictl -c /etc/patroni/patroni.yml list (run on one node)
+it failed after you change `fusion_controlplane_logs_database_port
+
+netstat -anpe | grep click` and `openssl s_client --connect localhost:9000     
+==================================
+update //etc/fusion/fusion-controlplane.yml
+
+haproxy_versions:
+- name: HAProxy Enterprise 2.9
+path: /opt/hapee-2.9/sbin/hapee-lb
+modules: /opt/hapee-2.9/modules/
+
+I also had to create a user_dataplane.xml in /etc/clickhouse-server/users.d (copied the Fusion user) with <ip>10.0.0.0/8<ip> before it would stop rejecting my cluster nodes coming from 10.15.x.x sending logs. that's probaly because of the tls_user above. could likely be combined with Fusion. i'm not sure where those values came from in previous pre-upgraded versions but this started happening at least 2 upgrades ago.
+=====================================================================================
+ (I had first tried making a direct copy of user_fusion before w/ just subst the fusion name for dataplane, but with the restrictive IP list ansible is generating it wasn't allowing connections, changing the permit to 10/8 was done in 2 separate edits if you know what I mean)
+
+
+
+
+
+
+
+

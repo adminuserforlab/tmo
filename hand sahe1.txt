@@ -1,0 +1,26 @@
+What’s happening:
+
+	1. Some TLS connections are being reset (RST) — meaning the connection was suddenly closed.
+
+	2. Other requests show 500 NOSRV errors, which means HAProxy closed the connection because it ran out of buffer
+	space when rewriting large HTTP headers (like client certificate data).
+
+Why it happens:
+
+	a. TCP resets → The client tried to reuse a connection that was already closed, or a firewall/load balancer ended it early.
+
+	b. 500 NOSRV → HAProxy’s buffer (tune.maxrewrite) is too small for all the extra headers.
+
+	c. Timeouts → timeout connect 1000ms is too short — it can cut off slow connections early.
+
+Fix plan:
+
+	1. Capture packets (pcap) on both client and HAProxy to see who is sending the RST.
+
+	2. Increase tune.maxrewrite size (e.g., 8K → 16K).
+
+	3. Increase timeout connect to 3–5 seconds.
+
+	4. Adjust client/server timeouts to more practical values.
+
+	5. Re-run the test and compare if resets and 500s drop

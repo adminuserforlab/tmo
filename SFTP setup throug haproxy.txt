@@ -1,0 +1,56 @@
+[EXTERNAL] SFTP Setup through HAProxy===========
+
+I'm trying to setup an SFTP connection to be used by external collection agencies to access an internal SFTP server in our DMZ proxied though HAProxy.
+
+I've changed the SSH port on the server to 2022, and am trying to use Port 22 for SFTP, I've tried Port 2222 as well.
+
+I can see on the HAProxy server that it's listening on port 22. When I try to connect with FileZilla, I'm not establishing a connection, nothing shows in Report Explorer for my attempts.
+
+I've setup WEBDAV to this same SFTP server so we can map drives in Windows clients on port 8090, and that's working fine.
+I've verified that the traffic is allowed through our firewall. It doesn't seem like it's hitting the HAProxy server though.
+My config for SFTP is
+frontend SFTP_IN
+mode tcp
+bind *:22 name *.22
+bind *:2222 name *.2222
+option tcplog
+default_backend DMZSFTP_22
+
+backend DMZSFTP_22
+description DMSSFTP Port 22
+enabled
+server DMZSFTP:22 172.30.30.11:22 check port 22 weight 10
+Is there anything else I need to do to have SFTP pass through HAProxy using port 22?
+===================================================================
+
+So this is peculiar... from the logs it almost seems like this is being handled in 'mode http' despite seeing you have 'mode tcp' configured on the frontend.
+
+e.g.
+Nov 7 11:33:56 dmz-haproxy hapee-lb[1577861]: 87.236.176.180:51107 [07/Nov/2025:11:33:53.086] SFTP_IN DMZSFTP_22/DMZSFTP:22 0/7/3014 209 PH 34/1/0/0/0 0/0
+
+PH The proxy blocked the server's response, because it was invalid,
+incomplete, dangerous (cache control), or matched a security filter.
+In any case, an HTTP 502 error is sent to the client. One possible
+cause for this error is an invalid syntax in an HTTP header name
+containing unauthorized characters. It is also possible but quite
+rare, that the proxy blocked a chunked-encoding request from the
+client due to an invalid syntax, before the server responded. In this
+case, an HTTP 400 error is sent to the client and reported in the
+logs. Finally, it may be due to an HTTP header rewrite failure on the
+response. In this case, an HTTP 500 error is sent (see
+"tune.maxrewrite" and "http-response strict-mode" for more
+inforomation).
+
+H : the proxy was waiting for complete, valid response HEADERS from the
+server (HTTP only).
+
+Could you specify 'mode tcp' on the DMZSFTP_22 backend as well just to assure?
+
+And after running your reload and testing, can you send me fresh configs and logs?
+=========================================
+My guess is that your issue was http mode was being inherited from the defaults section "default" where you set:
+mode http
+
+Given that, you had to explicitly set 'mode tcp' for the backend as well.
+
+

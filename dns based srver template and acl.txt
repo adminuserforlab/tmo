@@ -1,0 +1,18 @@
+dns based server template +ACL 
+
+I am using server templates on backend servers where a given DNS entry has multiple IP addresses defined as A records behind it. This works fine.
+
+I would like to know if it is possible for me to apply an ACL so that I can filter out entries from the pool based on certain conditions, eg:
+let's say that the server template looks up myservice.example.org and in that dns entry we have:
+myservice.example.org IN A 10.0.0.1
+myservice.example.org IN A 10.0.0.2
+myservice.example.org IN A 10.0.0.3
+myservice.example.org IN A 192.168.0.1
+I would like to apply an ACL onto the backend server template to remove the backend server 192.168.0.1 by restricting the server template to only accept results from 10.0.0.0/24.
+Can you please confirm if this is possible? Does not seem to be the case in the docs.
+=========================
+Unfortunately, you can't use an ACL on a server-template configuration.
+
+In my opinion you have two choices:
+- The best way for me is to configure on your DNS zone another entry which will only use by hapee
+- The other way (I guess depending on how your server numbers) is to add "server" manually and don't use server-template

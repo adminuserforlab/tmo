@@ -1,0 +1,44 @@
+Customer  Message:  We moved from Cisco ASA to Fortinet Fortigate. We had some issues and were down for an extended period. Once we fixed the issue we found that our external ADFS servers could no longer communicate with the internal over the virtual service IP. I'm not sure what's wrong.
+--------------------------------------------------------------
+Engineer reply :Since the change, are you seeing anything in the Traffic Logs to indicate that it's "trying" but having issues, or do you believe traffic isn't even making it to the Aloha at all?
+
+We can also give you a command to help take some packet captures on the listener if needed, but given disk limitations that is a bit more complicated than usual. So we can save that unless we need it.
+
+Let me know if you see anything related to the backend in question in the Traffic logs and we can start there.
+
+------------------------------------------
+solution:
+
+Moved from Cisco ASA to Fortigate
+
+External ADFS servers having hard time communicating
+Policy (on firewall) looks correct
+Bypassing ALOHA LB worked
+
+IP addresses didn't change because they were moved to the new hardware 
+192.168.1.54/24 - Local IP on ALOHA 
+
+Firewall IP is 192.168.1.4
+Ping from ALOHA to Firewall worked fine
+
+192.168.1.65 is the VIP - .54 is self IP 
+
+Running telnet 192.168.1.65 443 from firewall - Worked 
+192.168.1.4 is the Firewall IP
+
+Servers 172.16.50.40 and .41 couldn't communicate to the internal adfs at 192.168.1.65 (bind) 
+async route issue, we're getting syn in on eth1 and syn/ack out eth0 
+
+Suspect that Cisco ASA had NAT configured and it looks like it did (hard to say as I can't read their configs super well).
+
+adding "interface eth1" to the bind line for the frontend with 192.168.1.65 - didn't fix it because there was an arp request going out eth1 for 172.16.50.40 and no response.
+
+Added a route to the eth1 interface for 172.16.50.40 and .41/32 via 192.168.1.1 
+Now curl from the backend server works 
+
+Change window this evening to test it. 
+
+##R
+Added a route to the eth1 interface for 172.16.50.40 and .41/32 via 192.168.1.1 
+Now curl from the backend server works 
+They will test the fix tonight and confirm (if they get a change window)
