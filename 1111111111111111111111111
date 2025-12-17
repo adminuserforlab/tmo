@@ -1,0 +1,5 @@
+---
+- name: goo thing start
+  host: me
+  run : all time
+  
