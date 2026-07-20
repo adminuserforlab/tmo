@@ -1,35 +1,170 @@
 ---
-- name: Check available Windows updates from WSUS
+- name: Windows Update Check Report
   hosts: all
   gather_facts: false
 
   tasks:
+
+    # ============================================================
+    # Verify the target Windows server is reachable via WinRM
+    # before running any further tasks. Fails fast if unreachable.
+    # ============================================================
+    - name: Confirm WinRM connectivity
+      ansible.windows.win_ping:
+
+
+    # ============================================================
+    # Collect system information from the target — hostname, OS,
+    # version, uptime, free disk, and configured WSUS server URL.
+    # Data is returned as JSON for easy parsing.
+    # ============================================================
+    - name: Get system information
+      ansible.windows.win_shell: |
+        $os = Get-CimInstance Win32_OperatingSystem
+        $uptime = (Get-Date) - $os.LastBootUpTime
+        $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
+        $wsus = Get-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -ErrorAction SilentlyContinue
+
+        [PSCustomObject]@{
+          Hostname     = $env:COMPUTERNAME
+          OS           = $os.Caption
+          Version      = $os.Version
+          LastBoot     = $os.LastBootUpTime.ToString("yyyy-MM-dd HH:mm:ss")
+          UptimeDays   = "{0} days, {1} hours" -f $uptime.Days, $uptime.Hours
+          FreeDiskGB   = [math]::Round($disk.FreeSpace / 1GB, 2)
+          WSUSServer   = if ($wsus.WUServer) { $wsus.WUServer } else { "NOT CONFIGURED" }
+        } | ConvertTo-Json
+      register: sys_info
+      changed_when: false
+
+
+    # ============================================================
+    # Parse the JSON returned from the previous task into a
+    # dictionary variable named `system` for use in later tasks.
+    # ============================================================
+    - name: Parse system information
+      ansible.builtin.set_fact:
+        system: "{{ sys_info.stdout | from_json }}"
+
+
+    # ============================================================
+    # Force the Windows Update Agent to check in with WSUS
+    # immediately, rather than waiting for the next scheduled
+    # detection interval. Ensures we get the freshest data.
+    # ============================================================
     - name: Force WSUS detection cycle
       ansible.windows.win_shell: |
         wuauclt /resetauthorization /detectnow
         Start-Sleep -Seconds 15
         (New-Object -ComObject Microsoft.Update.AutoUpdate).DetectNow()
         Start-Sleep -Seconds 30
+      changed_when: false
 
-    - name: Search for available updates
+
+    # ============================================================
+    # Search WSUS for available updates in ONLY the Critical
+    # and Security categories. `state: searched` is READ-ONLY —
+    # it does NOT install anything, only reports availability.
+    # ============================================================
+    - name: Search for critical and security updates only
       ansible.windows.win_updates:
         state: searched
+        category_names:
+          - CriticalUpdates
+          - SecurityUpdates
       register: update_search
 
-    - name: Show update summary
+
+    # ============================================================
+    # Filter the search results to keep only updates that were
+    # NOT filtered out by category (i.e., the ones that actually
+    # match Critical/Security). Removes noise from the report.
+    # ============================================================
+    - name: Filter to only relevant updates
+      ansible.builtin.set_fact:
+        relevant_updates: >-
+          {{ update_search.updates | dict2items
+             | map(attribute='value')
+             | rejectattr('filtered_reason', 'defined')
+             | list }}
+
+
+    # ============================================================
+    # Display the formatted report header showing host details,
+    # WSUS server, total update count, and reboot status.
+    # ============================================================
+    - name: Display report header
       ansible.builtin.debug:
         msg:
-          - "Hostname: {{ inventory_hostname }}"
-          - "Total updates found: {{ update_search.found_update_count }}"
-          - "Reboot required: {{ update_search.reboot_required }}"
+          - "=================================================="
+          - "  WINDOWS UPDATE REPORT - {{ system.Hostname }}"
+          - "=================================================="
+          - "OS:              {{ system.OS }}"
+          - "Version:         {{ system.Version }}"
+          - "Last Boot:       {{ system.LastBoot }}"
+          - "Uptime:          {{ system.UptimeDays }}"
+          - "Free Disk (C:):  {{ system.FreeDiskGB }} GB"
+          - "WSUS Server:     {{ system.WSUSServer }}"
+          - "--------------------------------------------------"
+          - "Critical/Security Updates Available: {{ relevant_updates | length }}"
+          - "Reboot Pending:                      {{ update_search.reboot_required }}"
+          - "=================================================="
 
-    - name: Show update details (titles and KB)
-      ansible.builtin.debug:
-        msg: "{{ item.title }} (KB: {{ item.kb | default(['N/A']) | join(',') }})"
-      loop: "{{ update_search.updates | dict2items | map(attribute='value') | list }}"
-      when: update_search.found_update_count | int > 0
 
-    - name: No updates message
+    # ============================================================
+    # Print each available update in numbered format with its
+    # KB number and title. Skips this task if no updates found.
+    # ============================================================
+    - name: Show update details (title and KB)
       ansible.builtin.debug:
-        msg: "No updates available — client is up to date or WSUS hasn't approved any updates yet."
-      when: update_search.found_update_count | int == 0
+        msg: >-
+          [{{ '%02d' | format(idx + 1) }}]
+          KB{{ item.kb | default(['N/A']) | join(',') }}
+          - {{ item.title }}
+      loop: "{{ relevant_updates }}"
+      loop_control:
+        index_var: idx
+        label: "KB{{ item.kb | default(['?']) | join(',') }}"
+      when: relevant_updates | length > 0
+
+
+    # ============================================================
+    # If no critical or security updates are pending, display
+    # a friendly confirmation message that the system is
+    # up to date.
+    # ============================================================
+    - name: Show up-to-date confirmation
+      ansible.builtin.debug:
+        msg: "✓ {{ system.Hostname }} — No critical or security updates pending. System is up to date."
+      when: relevant_updates | length == 0
+
+
+    # ============================================================
+    # Save the entire report to a text file on the Ansible
+    # control node under ./reports/<hostname>_update_report.txt
+    # for record-keeping, audit, or ticket attachment.
+    # ============================================================
+    - name: Save report to local file
+      ansible.builtin.copy:
+        dest: "./reports/{{ inventory_hostname }}_update_report.txt"
+        content: |
+          ==================================================
+            WINDOWS UPDATE REPORT - {{ system.Hostname }}
+          ==================================================
+          Report Generated: {{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}
+          OS:              {{ system.OS }}
+          Version:         {{ system.Version }}
+          Last Boot:       {{ system.LastBoot }}
+          Uptime:          {{ system.UptimeDays }}
+          Free Disk (C:):  {{ system.FreeDiskGB }} GB
+          WSUS Server:     {{ system.WSUSServer }}
+          --------------------------------------------------
+          Critical/Security Updates Available: {{ relevant_updates | length }}
+          Reboot Pending:                      {{ update_search.reboot_required }}
+          --------------------------------------------------
+          {% for u in relevant_updates %}
+          [{{ '%02d' | format(loop.index) }}] KB{{ u.kb | default(['N/A']) | join(',') }} - {{ u.title }}
+          {% endfor %}
+          ==================================================
+      delegate_to: localhost
+      become: false
