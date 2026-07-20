@@ -1,28 +1,56 @@
 ---
+# ============================================================
+# Read the current value of WUStatusServer registry key.
+# This is used to check if WSUS status reporting URL is
+# already correctly configured before making any changes.
+# ============================================================
 - name: Read WUStatusServer
   ansible.windows.win_reg_stat:
     path: "{{ reg_path }}"
     name: WUStatusServer
   register: wu_status_server
 
+
+# ============================================================
+# Read the current value of WUServer registry key.
+# This is the URL the client uses to download updates from
+# WSUS. Used to determine if reconfiguration is needed.
+# ============================================================
 - name: Read WUServer
   ansible.windows.win_reg_stat:
     path: "{{ reg_path }}"
     name: WUServer
   register: wu_server
 
+
+# ============================================================
+# Read the current value of UpdateServiceUrlAlternate.
+# If this contains any value, the client may fall back to an
+# alternate update source. We want this cleared for pure WSUS.
+# ============================================================
 - name: Read UpdateServiceUrlAlternate
   ansible.windows.win_reg_stat:
     path: "{{ reg_path }}"
     name: UpdateServiceUrlAlternate
   register: update_service_alt
 
+
+# ============================================================
+# Configure WSUS policy — this block runs ONLY if any of the
+# three registry values above differ from the desired state.
+# All child tasks execute together as one atomic change.
+# ============================================================
 - name: Configure WSUS policy
   when: >-
     wu_status_server.value | default('') != wsus_server or
     wu_server.value | default('') != wsus_server or
     update_service_alt.value | default('') != ''
   block:
+
+    # --------------------------------------------------------
+    # Set WUServer to the WSUS server URL. This tells the
+    # client where to download Windows updates from.
+    # --------------------------------------------------------
     - name: Set WUServer
       ansible.windows.win_regedit:
         path: "{{ reg_path }}"
@@ -30,6 +58,12 @@
         data: "{{ wsus_server }}"
         type: string
 
+
+    # --------------------------------------------------------
+    # Set WUStatusServer to the WSUS server URL. This tells
+    # the client where to report update status/results.
+    # Usually same as WUServer.
+    # --------------------------------------------------------
     - name: Set WUStatusServer
       ansible.windows.win_regedit:
         path: "{{ reg_path }}"
@@ -37,6 +71,12 @@
         data: "{{ wsus_server }}"
         type: string
 
+
+    # --------------------------------------------------------
+    # Clear UpdateServiceUrlAlternate. Prevents the client
+    # from falling back to an alternate update source and
+    # ensures WSUS is the ONLY source of updates.
+    # --------------------------------------------------------
     - name: Clear UpdateServiceUrlAlternate
       ansible.windows.win_regedit:
         path: "{{ reg_path }}"
@@ -44,7 +84,13 @@
         data: ""
         type: string
 
-    # Mirrors Salt lgpo.set CorpWUFillEmptyContentUrls: True
+
+    # --------------------------------------------------------
+    # Enable CorpWUFillEmptyContentUrls. Mirrors the Salt
+    # policy `lgpo.set CorpWUFillEmptyContentUrls: True`.
+    # Allows Windows Update to populate empty content URLs
+    # from the enterprise WSUS server.
+    # --------------------------------------------------------
     - name: Set CorpWUFillEmptyContentUrls
       ansible.windows.win_regedit:
         path: "{{ reg_path }}"
@@ -52,7 +98,13 @@
         data: 1
         type: dword
 
-    # Mirrors Salt lgpo.set CorpWUDoNotEnforceEnterpriseTLSCertPinning: False
+
+    # --------------------------------------------------------
+    # Disable CorpWUDoNotEnforceEnterpriseTLSCertPinning.
+    # Mirrors the Salt policy setting this to False.
+    # Setting data=0 means TLS cert pinning IS enforced —
+    # this is the more secure choice for update detection.
+    # --------------------------------------------------------
     - name: Disable CorpWUDoNotEnforceEnterpriseTLSCertPinningForUpdateDetection
       ansible.windows.win_regedit:
         path: "{{ reg_path }}"
@@ -60,9 +112,22 @@
         data: 0
         type: dword
 
+
+    # --------------------------------------------------------
+    # Force an immediate Group Policy refresh so the new
+    # registry settings take effect without waiting for the
+    # next GPO refresh cycle (default 90 minutes).
+    # --------------------------------------------------------
     - name: Run gpupdate
       ansible.windows.win_command: gpupdate /force
 
+
+# ============================================================
+# Display a friendly compliance message if no changes were
+# needed — i.e., all three registry values already match
+# the desired WSUS state. This block only runs when the
+# system is already compliant.
+# ============================================================
 - name: WSUS policy already compliant
   ansible.builtin.debug:
     msg: "LGPO unchanged"
