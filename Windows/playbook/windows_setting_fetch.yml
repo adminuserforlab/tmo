@@ -1,0 +1,87 @@
+---
+- name: Verify WSUS related registry policies
+  hosts: windows
+  gather_facts: false
+
+  vars:
+    wu_reg_path: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    au_reg_path: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+
+  tasks:
+
+    #################################################################
+    # WindowsUpdate path checks
+    #################################################################
+
+    - name: Check WUServer
+      ansible.windows.win_reg_stat:
+        path: "{{ wu_reg_path }}"
+        name: WUServer
+      register: reg_wuserver
+
+    - name: Check WUStatusServer
+      ansible.windows.win_reg_stat:
+        path: "{{ wu_reg_path }}"
+        name: WUStatusServer
+      register: reg_wustatusserver
+
+    - name: Check UpdateServiceUrlAlternate
+      ansible.windows.win_reg_stat:
+        path: "{{ wu_reg_path }}"
+        name: UpdateServiceUrlAlternate
+      register: reg_updateservicealternate
+
+    - name: Check CorpWUDoNotEnforceEnterpriseTLSCertPinningForUpdateDetection
+      ansible.windows.win_reg_stat:
+        path: "{{ wu_reg_path }}"
+        name: CorpWUDoNotEnforceEnterpriseTLSCertPinningForUpdateDetection
+      register: reg_tls_pinning
+
+    - name: Check SetProxyBehaviorForUpdateDetection
+      ansible.windows.win_reg_stat:
+        path: "{{ wu_reg_path }}"
+        name: SetProxyBehaviorForUpdateDetection
+      register: reg_proxy_behavior
+
+    - name: Check CorpWUFillEmptyContentUrls
+      ansible.windows.win_reg_stat:
+        path: "{{ wu_reg_path }}"
+        name: CorpWUFillEmptyContentUrls
+      register: reg_fill_empty
+
+    - name: Get windows policy settings
+      ansible.windows.win_powershell:
+        script: |
+          Get-ItemProperty `
+            -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" |
+          Select-Object * |
+          ConvertTo-Json -Depth 5
+      register: policy
+      check_mode: false
+
+
+    #################################################################
+    # AU path checks
+    #################################################################
+
+    - name: Check UseWUServer
+      ansible.windows.win_reg_stat:
+        path: "{{ au_reg_path }}"
+        name: UseWUServer
+      register: reg_usewuserver
+
+    #################################################################
+    # Display results
+    #################################################################
+
+    - name: Show WSUS registry values
+      debug:
+        msg:
+          - "WUServer exists={{ reg_wuserver.exists }} value={{ reg_wuserver.value | default('NOT SET') }}"
+          - "WUStatusServer exists={{ reg_wustatusserver.exists }} value={{ reg_wustatusserver.value | default('NOT SET') }}"
+          - "UpdateServiceUrlAlternate exists={{ reg_updateservicealternate.exists }} value={{ reg_updateservicealternate.value | default('NOT SET') }}"
+          - "CorpWUDoNotEnforceEnterpriseTLSCertPinningForUpdateDetection exists={{ reg_tls_pinning.exists }} value={{ reg_tls_pinning.value | default('NOT SET') }}"
+          - "SetProxyBehaviorForUpdateDetection exists={{ reg_proxy_behavior.exists }} value={{ reg_proxy_behavior.value | default('NOT SET') }}"
+          - "CorpWUFillEmptyContentUrls exists={{ reg_fill_empty.exists }} value={{ reg_fill_empty.value | default('NOT SET') }}"
+          - "UseWUServer exists={{ reg_usewuserver.exists }} value={{ reg_usewuserver.value | default('NOT SET') }}"
+          - "{{ policy }}"

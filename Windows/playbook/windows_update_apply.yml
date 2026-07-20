@@ -1,0 +1,6 @@
+- name: Windows updates apply
+  hosts: all
+  gather_facts: true
+
+  roles:
+    - windows_update_apply

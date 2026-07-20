@@ -1,0 +1,72 @@
+---
+- name: Read WUStatusServer
+  ansible.windows.win_reg_stat:
+    path: "{{ reg_path }}"
+    name: WUStatusServer
+  register: wu_status_server
+
+- name: Read WUServer
+  ansible.windows.win_reg_stat:
+    path: "{{ reg_path }}"
+    name: WUServer
+  register: wu_server
+
+- name: Read UpdateServiceUrlAlternate
+  ansible.windows.win_reg_stat:
+    path: "{{ reg_path }}"
+    name: UpdateServiceUrlAlternate
+  register: update_service_alt
+
+- name: Configure WSUS policy
+  when: >-
+    wu_status_server.value | default('') != wsus_server or
+    wu_server.value | default('') != wsus_server or
+    update_service_alt.value | default('') != ''
+  block:
+    - name: Set WUServer
+      ansible.windows.win_regedit:
+        path: "{{ reg_path }}"
+        name: WUServer
+        data: "{{ wsus_server }}"
+        type: string
+
+    - name: Set WUStatusServer
+      ansible.windows.win_regedit:
+        path: "{{ reg_path }}"
+        name: WUStatusServer
+        data: "{{ wsus_server }}"
+        type: string
+
+    - name: Clear UpdateServiceUrlAlternate
+      ansible.windows.win_regedit:
+        path: "{{ reg_path }}"
+        name: UpdateServiceUrlAlternate
+        data: ""
+        type: string
+
+    # Mirrors Salt lgpo.set CorpWUFillEmptyContentUrls: True
+    - name: Set CorpWUFillEmptyContentUrls
+      ansible.windows.win_regedit:
+        path: "{{ reg_path }}"
+        name: CorpWUFillEmptyContentUrls
+        data: 1
+        type: dword
+
+    # Mirrors Salt lgpo.set CorpWUDoNotEnforceEnterpriseTLSCertPinning: False
+    - name: Disable CorpWUDoNotEnforceEnterpriseTLSCertPinningForUpdateDetection
+      ansible.windows.win_regedit:
+        path: "{{ reg_path }}"
+        name: CorpWUDoNotEnforceEnterpriseTLSCertPinningForUpdateDetection
+        data: 0
+        type: dword
+
+    - name: Run gpupdate
+      ansible.windows.win_command: gpupdate /force
+
+- name: WSUS policy already compliant
+  ansible.builtin.debug:
+    msg: "LGPO unchanged"
+  when:
+    - wu_status_server.value | default('') == wsus_server
+    - wu_server.value | default('') == wsus_server
+    - update_service_alt.value | default('') == ''

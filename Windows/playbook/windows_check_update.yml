@@ -1,0 +1,35 @@
+---
+- name: Check available Windows updates from WSUS
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Force WSUS detection cycle
+      ansible.windows.win_shell: |
+        wuauclt /resetauthorization /detectnow
+        Start-Sleep -Seconds 15
+        (New-Object -ComObject Microsoft.Update.AutoUpdate).DetectNow()
+        Start-Sleep -Seconds 30
+
+    - name: Search for available updates
+      ansible.windows.win_updates:
+        state: searched
+      register: update_search
+
+    - name: Show update summary
+      ansible.builtin.debug:
+        msg:
+          - "Hostname: {{ inventory_hostname }}"
+          - "Total updates found: {{ update_search.found_update_count }}"
+          - "Reboot required: {{ update_search.reboot_required }}"
+
+    - name: Show update details (titles and KB)
+      ansible.builtin.debug:
+        msg: "{{ item.title }} (KB: {{ item.kb | default(['N/A']) | join(',') }})"
+      loop: "{{ update_search.updates | dict2items | map(attribute='value') | list }}"
+      when: update_search.found_update_count | int > 0
+
+    - name: No updates message
+      ansible.builtin.debug:
+        msg: "No updates available — client is up to date or WSUS hasn't approved any updates yet."
+      when: update_search.found_update_count | int == 0

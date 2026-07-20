@@ -1,0 +1,3 @@
+---
+patch_compliance_fact_file: 'C:\ProgramData\ansible_facts\patch_status.json'
+patched_over30: false
