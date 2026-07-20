@@ -1,6 +1,7 @@
-- name: Windows updates apply
+---
+- name: Windows compliance + patching
   hosts: all
   gather_facts: true
-
   roles:
+    - windows_patch_compliance
     - windows_update_apply
