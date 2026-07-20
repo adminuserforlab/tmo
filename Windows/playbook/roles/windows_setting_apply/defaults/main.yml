@@ -1,0 +1,3 @@
+---
+wsus_server: "https://msot-wsus.afucorp.test:8531"
+reg_path: HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate
