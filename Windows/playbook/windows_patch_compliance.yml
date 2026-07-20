@@ -1,7 +1,0 @@
----
-- name: Windows patch compliance
-  hosts: all
-  gather_facts: true
-
-  roles:
-    - windows_patch_compliance

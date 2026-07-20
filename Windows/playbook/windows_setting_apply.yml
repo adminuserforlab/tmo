@@ -1,6 +1,0 @@
-- name: Windows setting apply
-  hosts: all
-  gather_facts: true
-
-  roles:
-    - windows_setting_apply
