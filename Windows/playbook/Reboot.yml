@@ -1,20 +1,70 @@
 ---
-- name: Reboot Windows server
+- name: Reboot Windows server only if a reboot is pending
   hosts: all
   gather_facts: false
 
   tasks:
-    - name: Reboot the server
+
+    # ============================================================
+    # Check the Windows registry and system state to determine
+    # if there's a pending reboot from a previous update, install,
+    # or file rename operation. Returns True/False.
+    # ============================================================
+    - name: Check if reboot is pending
+      ansible.windows.win_shell: |
+        $pending = $false
+        if (Test-Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") { $pending = $true }
+        if (Test-Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired") { $pending = $true }
+        if (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -Name PendingFileRenameOperations -ErrorAction SilentlyContinue) { $pending = $true }
+        try {
+          $util = [wmiclass]"\\.\root\ccm\clientsdk:CCM_ClientUtilities"
+          $status = $util.DetermineIfRebootPending()
+          if (($status -ne $null) -and $status.RebootPending) { $pending = $true }
+        } catch {}
+        Write-Output $pending
+      register: reboot_check
+      changed_when: false
+
+
+    # ============================================================
+    # Display the result of the pending reboot check for
+    # visibility in the job output.
+    # ============================================================
+    - name: Show pending reboot status
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} — Pending reboot: {{ reboot_check.stdout | trim }}"
+
+
+    # ============================================================
+    # Reboot the server only if the check above returned True.
+    # If no reboot is pending, this task is skipped entirely.
+    # ============================================================
+    - name: Reboot the server (only if pending)
       ansible.windows.win_reboot:
         reboot_timeout: 3600
         pre_reboot_delay: 30
         post_reboot_delay: 60
-        msg: "Reboot initiated by AAP"
+        msg: "Reboot initiated by AAP — pending reboot detected"
         test_command: "whoami"
+      when: reboot_check.stdout | trim == "True"
 
-    - name: confirm server is back online
+
+    # ============================================================
+    # Confirm server is back online after reboot. Runs only if
+    # the reboot was actually performed.
+    # ============================================================
+    - name: Confirm server is back online
       ansible.windows.win_ping:
+      when: reboot_check.stdout | trim == "True"
 
-    - name: Report reboot success
+
+    # ============================================================
+    # Report the outcome — either that reboot was performed
+    # successfully, or that no reboot was needed.
+    # ============================================================
+    - name: Report result
       ansible.builtin.debug:
-        msg: "{{ inventory_hostname }} rebooted successfully"
+        msg: >-
+          {{ inventory_hostname }} —
+          {{ 'Rebooted successfully' if reboot_check.stdout | trim == 'True'
+             else 'No reboot needed, system is clean' }}
